@@ -6,11 +6,41 @@ import {
 } from '@mui/material';
 import { AirtableIntegration } from './integrations/airtable';
 import { NotionIntegration } from './integrations/notion';
+// import { HubSpotIntegration } from './integrations/hubspot';
+import { authorizeHubSpot, getHubSpotItems } from './integrations/hubspot';
 import { DataForm } from './data-form';
 
 const integrationMapping = {
     'Notion': NotionIntegration,
     'Airtable': AirtableIntegration,
+    'HubSpot': ({ user, org, integrationParams, setIntegrationParams }) => {
+        const handleAuthorize = async () => {
+            await authorizeHubSpot(user, org);
+        };
+
+        const handleFetchItems = async () => {
+            const items = await getHubSpotItems(user, org);
+            setIntegrationParams({
+                type: 'HubSpot',
+                credentials: { user, org, items },
+            });
+        };
+
+        return (
+            <Box display='flex' flexDirection='column' sx={{ mt: 2 }}>
+                <TextField
+                    label="HubSpot Authorization"
+                    value="Click to authorize HubSpot integration"
+                    InputProps={{ readOnly: true }}
+                    sx={{ mt: 2 }}
+                />
+                <Box display="flex" justifyContent="space-between" sx={{ mt: 2 }}>
+                    <button onClick={handleAuthorize}>Authorize</button>
+                    <button onClick={handleFetchItems}>Fetch Items</button>
+                </Box>
+            </Box>
+        );
+    },
 };
 
 export const IntegrationForm = () => {
