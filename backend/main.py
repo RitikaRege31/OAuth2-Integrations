@@ -1,9 +1,9 @@
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, Form, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-
+import os
 from integrations.airtable import authorize_airtable, get_items_airtable, oauth2callback_airtable, get_airtable_credentials
 from integrations.notion import authorize_notion, get_items_notion, oauth2callback_notion, get_notion_credentials
-from integrations.hubspot import authorize_hubspot, get_hubspot_credentials, get_items_hubspot, oauth2callback_hubspot
+from integrations.hubspot import authorize_hubspot, get_hubspot_credentials, get_items_hubspot, oauth2callback_hubspot, save_tokens, get_tokens
 
 app = FastAPI()
 
@@ -18,6 +18,38 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.post("/save_tokens")
+async def save_user_tokens(user_id: str, tokens: dict):
+    """
+    API to save OAuth tokens for a user.
+
+    Args:
+        user_id (str): The user's ID.
+        tokens (dict): The OAuth tokens.
+
+    Returns:
+        dict: Success message.
+    """
+    save_tokens(user_id, tokens)
+    return {"message": "Tokens saved successfully"}
+
+# Example of using the /get_tokens route to retrieve OAuth tokens
+@app.get("/get_tokens")
+async def retrieve_user_tokens(user_id: str):
+    """
+    API to retrieve OAuth tokens for a user.
+
+    Args:
+        user_id (str): The user's ID.
+
+    Returns:
+        dict: The user's tokens.
+    """
+    tokens = get_tokens(user_id)
+    if not tokens:
+        raise HTTPException(status_code=404, detail="Tokens not found")
+    return {"tokens": tokens}
 
 @app.get('/')
 def read_root():
