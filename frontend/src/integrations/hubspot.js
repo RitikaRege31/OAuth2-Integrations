@@ -48,7 +48,7 @@ export const HubSpotAuth = ({ user, org, integrationParams, setIntegrationParams
             if (credentials) {
                 setIsConnecting(false);
                 setIsConnected(true);
-                setIntegrationParams(prev => ({ ...prev, credentials: credentials, type: 'Hubspot' }));
+                setIntegrationParams(prev => ({ ...prev, credentials: credentials, type: 'HubSpot' }));
             }
             setIsConnecting(false);
         } catch (e) {

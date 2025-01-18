@@ -5,7 +5,7 @@ from fastapi import Request, HTTPException
 from fastapi.responses import HTMLResponse
 import httpx
 import asyncio
-
+from integrations.integration_item import IntegrationItem
 from redis_client import add_key_value_redis, get_value_redis, delete_key_redis
 
 from fastapi import APIRouter
@@ -109,22 +109,66 @@ async def get_hubspot_credentials(user_id, org_id):
 
 
 # Step 4: Get Items from HubSpot
-@router.get("/items")
-async def get_items_hubspot(user_id: str):
-    credentials = await get_hubspot_credentials(user_id)  # Retrieve credentials for the given user
-    access_token = credentials.get("access_token")
+@router.post("/load")
+def create_integration_item_metadata_object(response_json: dict) -> IntegrationItem:
+    """
+    Create an IntegrationItem object from HubSpot API response data.
+    """
+    name = response_json.get('properties', {}).get('name', {}).get('value', 'Unnamed Item')
+    created_time = response_json.get('createdAt')
+    last_modified_time = response_json.get('updatedAt')
+    parent_id = response_json.get('associations', {}).get('companyIds', [None])[0]
+    item_type = response_json.get('objectType', 'Unknown')
 
+    integration_item_metadata = IntegrationItem(
+        id=response_json['id'],
+        type=item_type,
+        name=name,
+        creation_time=created_time,
+        last_modified_time=last_modified_time,
+        parent_id=parent_id,
+    )
+    return integration_item_metadata
+
+
+async def get_items_hubspot(credentials: dict) -> list[IntegrationItem]:
+    """
+    Fetch items from HubSpot and convert them into IntegrationItem objects.
+    """
+    credentials = json.loads(credentials)
+    access_token = credentials.get('access_token')
     if not access_token:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+        raise HTTPException(status_code=400, detail="Missing access token in credentials.")
 
-    items_url = "https://api.hubapi.com/crm/v3/objects/contacts"
-    headers = {"Authorization": f"Bearer {access_token}"}
-    
+    # HubSpot API URL for fetching objects (e.g., contacts)
+    api_url = "https://api.hubapi.com/crm/v3/objects/contacts"
+
     async with httpx.AsyncClient() as client:
-        response = await client.get(items_url, headers=headers)
+        response = await client.get(
+            api_url,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+        )
 
     if response.status_code != 200:
-        raise HTTPException(status_code=400, detail="Failed to fetch items.")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to fetch items from HubSpot: {response.text}",
+        )
 
-    items = response.json()
-    return {"items": items}
+    # Parse response data
+    items_data = response.json().get("results", [])
+    list_of_integration_item_metadata = []
+
+    for item in items_data:
+        integration_item = create_integration_item_metadata_object(item)
+        list_of_integration_item_metadata.append(integration_item)
+
+    # Print the items for testing purposes
+    print(list_of_integration_item_metadata)
+
+    return list_of_integration_item_metadata
+
+
