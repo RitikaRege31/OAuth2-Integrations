@@ -108,30 +108,113 @@ async def get_hubspot_credentials(user_id, org_id):
     return credentials
 
 
-# Step 4: Get Items from HubSpot
-@router.post("/load")
-def create_integration_item_metadata_object(response_json: dict) -> IntegrationItem:
-    """
-    Create an IntegrationItem object from HubSpot API response data.
-    """
-    name = response_json.get('properties', {}).get('name', {}).get('value', 'Unnamed Item')
-    created_time = response_json.get('createdAt')
-    last_modified_time = response_json.get('updatedAt')
-    parent_id = response_json.get('associations', {}).get('companyIds', [None])[0]
-    item_type = response_json.get('objectType', 'Unknown')
+# # Step 4: Get Items from HubSpot
+# @router.post("/load")
+# def create_integration_item_metadata_object(response_json: dict) -> IntegrationItem:
+#     """
+#     Create an IntegrationItem object from HubSpot API response data.
+#     """
+#     name = response_json.get('properties', {}).get('name', {}).get('value', 'Unnamed Item')
+#     created_time = response_json.get('createdAt')
+#     last_modified_time = response_json.get('updatedAt')
+#     parent_id = response_json.get('associations', {}).get('companyIds', [None])[0]
+#     item_type = response_json.get('objectType', 'Unknown')
 
+#     integration_item_metadata = IntegrationItem(
+#         id=response_json['id'],
+#         type=item_type,
+#         name=name,
+#         creation_time=created_time,
+#         last_modified_time=last_modified_time,
+#         parent_id=parent_id,
+#     )
+#     return integration_item_metadata
+
+
+# async def get_items_hubspot(credentials: dict) -> list[IntegrationItem]:
+#     """
+#     Fetch items from HubSpot and convert them into IntegrationItem objects.
+#     """
+#     credentials = json.loads(credentials)
+#     access_token = credentials.get('access_token')
+#     if not access_token:
+#         raise HTTPException(status_code=400, detail="Missing access token in credentials.")
+
+#     # HubSpot API URL for fetching objects (e.g., contacts)
+#     api_url = "https://api.hubapi.com/crm/v3/objects/contacts"
+
+#     async with httpx.AsyncClient() as client:
+#         response = await client.get(
+#             api_url,
+#             headers={
+#                 "Authorization": f"Bearer {access_token}",
+#                 "Content-Type": "application/json",
+#             },
+#         )
+
+#     if response.status_code != 200:
+#         raise HTTPException(
+#             status_code=400,
+#             detail=f"Failed to fetch items from HubSpot: {response.text}",
+#         )
+
+#     # Parse response data
+#     items_data = response.json().get("results", [])
+#     list_of_integration_item_metadata = []
+
+#     for item in items_data:
+#         integration_item = create_integration_item_metadata_object(item)
+#         list_of_integration_item_metadata.append(integration_item)
+
+#     # Print the items for testing purposes
+#     print(list_of_integration_item_metadata)
+
+#     return list_of_integration_item_metadata
+
+
+def create_integration_item_metadata_object(
+    response_json: dict, item_type: str, parent_id=None, parent_name=None
+) -> IntegrationItem:
+    """
+    Create an IntegrationItem object from the HubSpot API response.
+    """
+    parent_id = None if parent_id is None else f"{parent_id}_HubSpot"
     integration_item_metadata = IntegrationItem(
-        id=response_json['id'],
+        id=response_json.get('id', None) + f"_{item_type}",
+        name=response_json.get('properties', {}).get('name', 'Unnamed Item'),
         type=item_type,
-        name=name,
-        creation_time=created_time,
-        last_modified_time=last_modified_time,
         parent_id=parent_id,
+        parent_path_or_name=parent_name,
     )
     return integration_item_metadata
 
 
-async def get_items_hubspot(credentials: dict) -> list[IntegrationItem]:
+def fetch_items(
+    access_token: str, url: str, aggregated_response: list, after=None
+):
+    """
+    Recursively fetch data from HubSpot API and handle pagination.
+    """
+    params = {'after': after} if after else {}
+    headers = {'Authorization': f'Bearer {access_token}'}
+    response = httpx.get(url, headers=headers, params=params)
+
+    if response.status_code == 200:
+        results = response.json().get('results', [])
+        next_page = response.json().get('paging', {}).get('next', {}).get('after', None)
+
+        aggregated_response.extend(results)
+
+        if next_page:
+            fetch_items(access_token, url, aggregated_response, next_page)
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to fetch items: {response.text}"
+        )
+
+
+async def get_items_hubspot(credentials) -> list[IntegrationItem]:
     """
     Fetch items from HubSpot and convert them into IntegrationItem objects.
     """
@@ -140,35 +223,41 @@ async def get_items_hubspot(credentials: dict) -> list[IntegrationItem]:
     if not access_token:
         raise HTTPException(status_code=400, detail="Missing access token in credentials.")
 
-    # HubSpot API URL for fetching objects (e.g., contacts)
-    api_url = "https://api.hubapi.com/crm/v3/objects/contacts"
+    base_url = "https://api.hubapi.com/crm/v3/objects"
+    endpoints = {
+        "contacts": f"{base_url}/contacts",
+        "companies": f"{base_url}/companies",
+        # Add more endpoints as needed
+    }
 
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            api_url,
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json",
-            },
-        )
-
-    if response.status_code != 200:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Failed to fetch items from HubSpot: {response.text}",
-        )
-
-    # Parse response data
-    items_data = response.json().get("results", [])
     list_of_integration_item_metadata = []
 
-    for item in items_data:
-        integration_item = create_integration_item_metadata_object(item)
-        list_of_integration_item_metadata.append(integration_item)
+    for item_type, url in endpoints.items():
+        aggregated_response = []
+        fetch_items(access_token, url, aggregated_response)
 
-    # Print the items for testing purposes
-    print(list_of_integration_item_metadata)
+        for response in aggregated_response:
+            integration_item = create_integration_item_metadata_object(response, item_type)
+            list_of_integration_item_metadata.append(integration_item)
 
+    print(f"list_of_integration_item_metadata: {list_of_integration_item_metadata}")
     return list_of_integration_item_metadata
+
+
+# @router.get("/credentials")
+# async def get_hubspot_credentials_endpoint(user_id: str, org_id: str):
+#     """
+#     API endpoint to retrieve stored HubSpot credentials.
+#     """
+#     return await get_hubspot_credentials(user_id, org_id)
+
+
+@router.post("/load")
+async def load_hubspot_items(user_id: str, org_id: str):
+    """
+    API endpoint to load and return HubSpot items as IntegrationItems.
+    """
+    credentials = await get_hubspot_credentials(user_id, org_id)
+    return await get_items_hubspot(credentials)
 
 
