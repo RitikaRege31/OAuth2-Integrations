@@ -107,23 +107,6 @@ async def get_hubspot_credentials(user_id, org_id):
     await delete_key_redis(f'hubspot_credentials:{org_id}:{user_id}')
     return credentials
 
-
-
-# def create_integration_item_metadata_object(
-#     response_json: dict, item_type: str, parent_id=None, parent_name=None
-# ) -> IntegrationItem:
-#     """
-#     Create an IntegrationItem object from the HubSpot API response.
-#     """
-#     parent_id = None if parent_id is None else f"{parent_id}_HubSpot"
-#     integration_item_metadata = IntegrationItem(
-#         id=response_json.get('id', None) + f"_{item_type}",
-#         name=response_json.get('properties', {}).get('name', 'Unnamed Item'),
-#         type=item_type,
-#         parent_id=parent_id,
-#         parent_path_or_name=parent_name,
-#     )
-#     return integration_item_metadata
 def create_integration_item_metadata_object(
     response_json: dict, item_type: str, parent_id=None, parent_name=None
 ) -> IntegrationItem:
