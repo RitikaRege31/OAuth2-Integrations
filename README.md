@@ -1,5 +1,5 @@
-# VectorShift assignment
-Integration of Hubspot to our application
+# OAuth2 Integrations
+Integration of Hubspot, Notion and Airtable to our application
 
 
 ## Prerequisites
