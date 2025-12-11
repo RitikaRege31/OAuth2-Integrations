@@ -1,675 +1,595 @@
-# 🎭 Puppeteer Frontend Testing - Complete Technical Guide
+# Puppeteer Testing Guide for Developers
 
-## 📚 Table of Contents
-1. [What is Puppeteer?](#what-is-puppeteer)
-2. [How Puppeteer Works](#how-puppeteer-works)
-3. [Integration in Your Project](#integration-in-your-project)
-4. [Screenshot Capture Deep Dive](#screenshot-capture-deep-dive)
-5. [Frontend Testing Workflow](#frontend-testing-workflow)
-6. [Best Practices](#best-practices)
-7. [Common Patterns](#common-patterns)
-
----
-
-## 🎯 What is Puppeteer?
-
-**Puppeteer** is a Node.js library that provides a high-level API to control Chrome/Chromium browsers programmatically. Think of it as a robot that can:
-- Open websites
-- Click buttons
-- Fill forms
-- Take screenshots
-- Extract data
-- Test web applications
-
-### Key Concepts
-
-**Browser Instance**: The actual Chrome/Chromium process launched by Puppeteer
-```javascript
-const browser = await puppeteer.launch({ headless: false });
-```
-
-**Page**: A tab/window within the browser (one browser can have many pages)
-```javascript
-const page = await browser.newPage();
-```
-
-**Headless Mode**: 
-- `headless: true` → Browser runs invisibly (faster, for CI/CD)
-- `headless: false` → You see the browser (better for debugging)
+## Table of Contents
+1. [Overview](#overview)
+2. [Prerequisites](#prerequisites)
+3. [Available Tests](#available-tests)
+4. [Running Tests](#running-tests)
+5. [Test Details](#test-details)
+6. [Environment Variables](#environment-variables)
+7. [Understanding Test Results](#understanding-test-results)
+8. [Troubleshooting](#troubleshooting)
+9. [Best Practices](#best-practices)
 
 ---
 
-## ⚙️ How Puppeteer Works
+## Overview
 
-### Architecture
+Puppeteer tests are end-to-end (E2E) tests that automate browser interactions to verify your application works correctly. These tests:
 
-```
-Your Test Script (Node.js)
-    ↓
-Puppeteer API
-    ↓
-Chrome DevTools Protocol (CDP)
-    ↓
-Chrome/Chromium Browser
-    ↓
-Renders Web Page
-```
+- **Simulate real user behavior** - Click buttons, fill forms, navigate pages
+- **Test against real backend** - All tests use your actual API (no mocking)
+- **Capture visual evidence** - Screenshots saved for verification
+- **Catch regressions** - Ensure features still work after code changes
 
-### Communication Flow
+### Why Use These Tests?
 
-1. **Your script** calls Puppeteer API (e.g., `page.goto()`)
-2. **Puppeteer** translates this to Chrome DevTools Protocol commands
-3. **Chrome** receives commands via WebSocket connection
-4. **Chrome** executes the command (navigate, click, etc.)
-5. **Chrome** sends results back through CDP
-6. **Puppeteer** returns the result to your script
-
-### Example: What Happens When You Call `page.goto()`
-
-```javascript
-await page.goto('http://localhost:3000/login');
-```
-
-**Behind the scenes:**
-1. Puppeteer sends `Page.navigate` CDP command
-2. Chrome starts loading the URL
-3. Chrome fires `Page.frameNavigated` event
-4. Chrome fires `Page.loadEventFired` when page loads
-5. Puppeteer waits for `networkidle2` (no network requests for 500ms)
-6. Promise resolves, your code continues
+- **Before deploying** - Verify critical user flows work
+- **After refactoring** - Ensure you didn't break anything
+- **During development** - Quick feedback on your changes
+- **Documentation** - Tests serve as examples of how features work
 
 ---
 
-## 🔌 Integration in Your Project
+## Prerequisites
 
-### Installation
-
-```json
-// package.json
-{
-  "dependencies": {
-    "puppeteer": "^24.32.0"
-  }
-}
+### 1. Install Dependencies
+```bash
+npm install
 ```
 
-Puppeteer automatically downloads Chromium when you install it.
-
-### Project Structure
-
-```
-zoe-frontend/
-├── scripts/
-│   ├── test-login-page.js      # Login page test
-│   ├── test-analysis-page.js   # Analysis page test
-│   └── test-saved-claims-page.js # Saved claims test
-├── package.json                 # npm scripts defined here
-└── PUPPETEER_DETAILED_GUIDE.md # This file
+### 2. Start Your Development Server
+In one terminal:
+```bash
+npm run dev
 ```
 
-### npm Scripts Integration
+The server should be running on `http://localhost:3000` (or your configured port).
 
-```json
-// package.json
-{
-  "scripts": {
-    "test:puppeteer:login": "cross-env node scripts/test-login-page.js",
-    "test:puppeteer:login:watch": "cross-env HEADLESS=false node scripts/test-login-page.js"
-  }
-}
-```
-
-**Why `cross-env`?**
-- Windows PowerShell doesn't support `VAR=value command` syntax
-- `cross-env` makes environment variables work cross-platform
-- Allows: `HEADLESS=false npm run test:puppeteer:login:watch`
-
----
-
-## 📸 Screenshot Capture Deep Dive
-
-### How Screenshots Work in Puppeteer
-
-#### 1. **Basic Screenshot**
-
-```javascript
-await page.screenshot({ path: 'screenshot.png' });
-```
-
-**What happens:**
-1. Puppeteer sends `Page.captureScreenshot` CDP command
-2. Chrome renders the current viewport to a bitmap
-3. Chrome encodes bitmap as PNG/JPEG
-4. Chrome sends image data back via CDP
-5. Puppeteer writes the data to the file system
-6. Returns the buffer (if no path specified)
-
-#### 2. **Full Page Screenshot**
-
-```javascript
-await page.screenshot({ 
-  path: 'full-page.png',
-  fullPage: true  // Captures entire scrollable area
-});
-```
-
-**Technical Process:**
-1. Puppeteer queries page dimensions: `Page.getLayoutMetrics`
-2. Gets viewport height and content height
-3. If `fullPage: true`, calculates total scroll height
-4. Takes multiple viewport screenshots while scrolling
-5. Stitches them together into one image
-6. Saves the composite image
-
-**Code Flow:**
-```javascript
-// Simplified version of what Puppeteer does internally
-const metrics = await page.evaluate(() => ({
-  width: document.documentElement.scrollWidth,
-  height: document.documentElement.scrollHeight
-}));
-
-// Scroll and capture each section
-for (let y = 0; y < metrics.height; y += viewportHeight) {
-  await page.evaluate((scrollY) => window.scrollTo(0, scrollY), y);
-  // Capture viewport screenshot
-  // Append to full image
-}
-```
-
-#### 3. **Screenshot Options**
-
-```javascript
-await page.screenshot({
-  path: 'screenshot.png',
-  type: 'png',              // 'png' or 'jpeg'
-  quality: 90,              // 0-100, only for JPEG
-  fullPage: true,           // Capture entire page
-  clip: {                   // Capture specific region
-    x: 0,
-    y: 0,
-    width: 800,
-    height: 600
-  },
-  omitBackground: false,    // Include background
-  encoding: 'base64'        // Return as base64 string
-});
-```
-
-### Login Screen Screenshot Example
-
-Let's trace through your login test:
-
-```javascript
-// 1. Launch browser
-const browser = await puppeteer.launch({ headless: false });
-const page = await browser.newPage();
-
-// 2. Navigate to login page
-await page.goto('http://localhost:3000/login', { 
-  waitUntil: 'networkidle2' 
-});
-
-// 3. Wait for React to render
-await new Promise(resolve => setTimeout(resolve, 500));
-
-// 4. Fill form
-await page.type('input[type="email"]', 'user@example.com');
-await page.type('input[type="password"]', 'password123');
-
-// 5. Click submit
-await page.click('button[type="submit"]');
-
-// 6. Wait for navigation
-await page.waitForNavigation({ waitUntil: 'networkidle2' });
-
-// 7. Take screenshot
-await page.screenshot({ 
-  path: 'login-page-smoke.png',
-  fullPage: true 
-});
-```
-
-**Screenshot Timeline:**
-```
-Time  Action
-----  ------
-0ms   Browser launches
-500ms Navigate to /login
-1000ms Page loads, React hydrates
-1500ms Form fields filled
-2000ms Submit clicked
-3000ms Login request sent
-4000ms Redirect to /dashboard
-4500ms Dashboard loads
-5000ms Screenshot captured ← Final state
-```
-
-### Screenshot Data Flow
-
-```
-Chrome Browser
-    ↓ (renders DOM to bitmap)
-Chrome Rendering Engine
-    ↓ (encodes bitmap)
-PNG/JPEG Image Data
-    ↓ (via CDP)
-Puppeteer API
-    ↓ (writes to disk)
-File System
-    ↓
-login-page-smoke.png
-```
-
----
-
-## 🧪 Frontend Testing Workflow
-
-### Complete Testing Flow
-
-#### 1. **Setup Phase**
-
-```javascript
-// Launch browser
-const browser = await puppeteer.launch({
-  headless: HEADLESS,
-  defaultViewport: { width: 1280, height: 900 },
-  args: ['--no-sandbox', '--disable-setuid-sandbox']
-});
-
-// Create page
-const page = await browser.newPage();
-page.setDefaultTimeout(45000); // 45 second timeout
-```
-
-**What this does:**
-- Spawns a new Chrome process
-- Creates a new tab
-- Sets viewport size (simulates screen size)
-- Configures timeouts for all operations
-
-#### 2. **Navigation Phase**
-
-```javascript
-await page.goto(`${BASE_URL}/login`, { 
-  waitUntil: 'networkidle2',
-  timeout: 30000
-});
-```
-
-**Wait Strategies:**
-- `load` - Wait for `load` event
-- `domcontentloaded` - Wait for DOM ready
-- `networkidle0` - No network requests for 500ms
-- `networkidle2` - ≤2 network requests for 500ms (recommended)
-
-#### 3. **Interaction Phase**
-
-```javascript
-// Wait for element
-await page.waitForSelector('input[type="email"]', { 
-  visible: true,
-  timeout: 10000
-});
-
-// Type text
-await page.type('input[type="email"]', 'user@example.com', {
-  delay: 30  // 30ms delay between keystrokes (simulates human)
-});
-
-// Click button
-await page.click('button[type="submit"]');
-```
-
-**Element Selection Methods:**
-- CSS Selector: `'input[type="email"]'`
-- XPath: `page.$x("//button[contains(., 'Login')]")`
-- Text: `page.waitForFunction(() => document.body.innerText.includes('Login'))`
-
-#### 4. **Assertion Phase**
-
-```javascript
-// Wait for navigation
-await page.waitForNavigation({ waitUntil: 'networkidle2' });
-
-// Check URL
-const url = page.url();
-if (url.includes('/dashboard')) {
-  console.log('✅ Successfully redirected');
-}
-
-// Check element exists
-const element = await page.$('h1');
-const text = await page.evaluate(el => el.textContent, element);
-console.log('Page title:', text);
-```
-
-#### 5. **Network Monitoring**
-
-```javascript
-// Intercept requests
-await page.setRequestInterception(true);
-page.on('request', (request) => {
-  if (request.url().includes('/api/login')) {
-    // Mock or log the request
-    return request.respond({ status: 200, body: '{}' });
-  }
-  return request.continue();
-});
-
-// Wait for specific request
-const loginRequest = await page.waitForRequest(
-  req => req.url().includes('/auth/login')
-);
-console.log('Request URL:', loginRequest.url());
-console.log('Request data:', loginRequest.postData());
-```
-
-#### 6. **Screenshot Phase**
-
-```javascript
-// Take screenshot
-await page.screenshot({ 
-  path: 'test-result.png',
-  fullPage: true 
-});
-```
-
-#### 7. **Cleanup Phase**
-
-```javascript
-await browser.close();
-```
-
----
-
-## 🎨 Best Practices
-
-### 1. **Wait Strategies**
-
-❌ **Bad:**
-```javascript
-await page.goto('/login');
-await page.click('button'); // Might fail if button not ready
-```
-
-✅ **Good:**
-```javascript
-await page.goto('/login', { waitUntil: 'networkidle2' });
-await page.waitForSelector('button', { visible: true });
-await page.click('button');
-```
-
-### 2. **Error Handling**
-
-❌ **Bad:**
-```javascript
-await page.click('button');
-```
-
-✅ **Good:**
-```javascript
-try {
-  await page.waitForSelector('button', { timeout: 10000 });
-  await page.click('button');
-} catch (error) {
-  await page.screenshot({ path: 'error-debug.png' });
-  throw error;
-}
-```
-
-### 3. **Timeouts**
-
-```javascript
-// Set default timeout
-page.setDefaultTimeout(45000);
-
-// Override for specific operations
-await page.waitForSelector('.slow-element', { timeout: 60000 });
-```
-
-### 4. **Screenshot on Failure**
-
-```javascript
-run().catch(async (error) => {
-  const pages = await browser?.pages();
-  if (pages?.[0]) {
-    await pages[0].screenshot({ path: 'error.png' });
-  }
-  throw error;
-});
-```
-
-### 5. **Environment Variables**
-
-```javascript
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
-const HEADLESS = process.env.HEADLESS !== 'false';
-```
+### 3. Set Up Test Credentials
+All tests require authentication. Set your credentials:
 
 **PowerShell:**
 ```powershell
-$env:BASE_URL = "http://localhost:3000"
-$env:HEADLESS = "false"
-npm run test
+$env:LOGIN_EMAIL = "your-email@example.com"
+$env:LOGIN_PASSWORD = "your-password"
 ```
 
-**Bash:**
+**Bash/Unix:**
 ```bash
-BASE_URL=http://localhost:3000 HEADLESS=false npm run test
+export LOGIN_EMAIL="your-email@example.com"
+export LOGIN_PASSWORD="your-password"
 ```
 
 ---
 
-## 🔄 Common Patterns
+## Available Tests
 
-### Pattern 1: Form Filling
+Your project has **4 Puppeteer tests**, each covering a different user interaction:
 
-```javascript
-// Wait for form
-await page.waitForSelector('form');
+| Test | Command | Purpose |
+|------|---------|---------|
+| **Login Test** | `test:puppeteer:login` | Tests user authentication flow |
+| **Analysis Form Test** | `test:puppeteer:analysis` | Tests claim analysis form submission |
+| **Saved Claims Navigation** | `test:puppeteer:saved-claims-nav` | Tests header navigation to saved claims |
+| **Saved Claims Details** | `test:puppeteer:saved-claims` | Tests clicking a claim to view details |
 
-// Fill fields
-await page.type('#email', email);
-await page.type('#password', password);
+Each test has two variants:
+- **Headless** (default) - Browser runs invisibly, faster
+- **Watch** (`:watch`) - Browser visible, better for debugging
 
-// Submit
-await page.click('button[type="submit"]');
+---
+
+## Running Tests
+
+### Quick Start
+
+**Run all tests in headless mode:**
+```bash
+npm run test:puppeteer:login
+npm run test:puppeteer:analysis
+npm run test:puppeteer:saved-claims-nav
+npm run test:puppeteer:saved-claims
 ```
 
-### Pattern 2: Waiting for Multiple Conditions
-
-```javascript
-await Promise.all([
-  page.waitForNavigation(),
-  page.waitForRequest(req => req.url().includes('/api/login'))
-]);
+**Run with visible browser (recommended for first time):**
+```bash
+npm run test:puppeteer:login:watch
+npm run test:puppeteer:analysis:watch
+npm run test:puppeteer:saved-claims-nav:watch
+npm run test:puppeteer:saved-claims:watch
 ```
 
-### Pattern 3: Conditional Screenshots
+### Test Execution Flow
 
-```javascript
-const url = page.url();
-if (url.includes('/dashboard')) {
-  await page.screenshot({ path: 'success.png' });
-} else {
-  await page.screenshot({ path: 'failure.png' });
-}
+1. **Test starts** → Launches Chrome browser
+2. **Logs in** (if needed) → Uses credentials from env vars
+3. **Performs actions** → Clicks, types, navigates
+4. **Waits for responses** → Monitors network requests
+5. **Takes screenshot** → Saves visual proof
+6. **Closes browser** → Cleanup
+
+---
+
+## Test Details
+
+### 1. Login Test (`test-login-page.js`)
+
+**Purpose:** Verifies the authentication flow works end-to-end.
+
+**What it tests:**
+- Login page loads correctly
+- Form fields are accessible
+- User can enter email and password
+- Login request is sent to backend
+- Successful login redirects to dashboard
+- Failed login shows appropriate error
+
+**Test Flow:**
+```
+1. Navigate to /login
+2. Wait for login form to load
+3. Fill email and password fields
+4. Click submit button
+5. Wait for /auth/login API request
+6. Wait for navigation to /dashboard
+7. Verify we're on dashboard page
+8. Take screenshot (login-page-smoke.png)
 ```
 
-### Pattern 4: Mocking API Responses
+**When to use:**
+- After changing login logic
+- After modifying authentication flow
+- Before deploying authentication changes
+- To verify backend authentication works
 
-```javascript
-await page.setRequestInterception(true);
-page.on('request', (request) => {
-  if (request.url().includes('/api/data')) {
-    return request.respond({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ data: 'mocked' })
-    });
-  }
-  return request.continue();
-});
+**Screenshot:** `login-page-smoke.png`
+
+---
+
+### 2. Analysis Form Test (`test-analysis-page.js`)
+
+**Purpose:** Verifies the claim analysis form can be filled and submitted.
+
+**What it tests:**
+- Dashboard loads after login
+- Analysis form is visible and accessible
+- All form fields can be filled (Claim ID, notes, comments)
+- File upload works (medical records)
+- "Start Analysis" button is clickable
+- Form submission triggers `/api/start_analysis` request
+- UI updates after submission
+
+**Test Flow:**
+```
+1. Login to application
+2. Navigate to /dashboard
+3. Wait for Analysis form to load
+4. Fill Claim ID field
+5. Fill Claim Notes textarea
+6. Fill Biller Comments textarea
+7. Upload medical record file (from fixtures/)
+8. Find and click "Start Analysis" button
+9. Wait for /api/start_analysis POST request
+10. Take screenshot (analysis-form-submission.png)
 ```
 
-### Pattern 5: Authentication Bypass
+**When to use:**
+- After modifying Analysis form component
+- After changing form validation
+- After updating file upload logic
+- To verify form submission works
+- Before deploying form changes
 
-```javascript
-// Seed localStorage before navigation
-await page.evaluateOnNewDocument((authData) => {
-  localStorage.setItem('persist:root', JSON.stringify(authData));
-}, mockAuthState);
+**Screenshot:** `analysis-form-submission.png`
 
-await page.goto('/dashboard'); // Already authenticated
+**Note:** Uses test file from `scripts/fixtures/medical-record.txt` (auto-created if missing)
+
+---
+
+### 3. Saved Claims Navigation Test (`test-saved-claims-navigation.js`)
+
+**Purpose:** Verifies navigation from dashboard to saved claims page via header button.
+
+**What it tests:**
+- Header "Saved Claims" button is visible
+- Button is clickable
+- Clicking button navigates to `/saved-claims`
+- Navigation completes successfully
+- Saved claims page loads
+
+**Test Flow:**
+```
+1. Login to application
+2. Navigate to /dashboard
+3. Wait for dashboard to load
+4. Find "Saved Claims" link in header
+5. Click the link
+6. Wait for navigation to /saved-claims
+7. Verify URL contains /saved-claims
+8. Take screenshot (saved-claims-navigation.png)
+```
+
+**When to use:**
+- After modifying header navigation
+- After changing routing logic
+- After updating AppHeader component
+- To verify navigation works correctly
+
+**Screenshot:** `saved-claims-navigation.png`
+
+---
+
+### 4. Saved Claims Details Test (`test-saved-claims-page.js`)
+
+**Purpose:** Verifies clicking on a saved claim loads its details correctly.
+
+**What it tests:**
+- Saved claims page loads
+- Claims list is displayed (or empty state)
+- Claim cards are clickable
+- Clicking a claim loads details
+- Claim details section appears
+- Details contain expected information
+
+**Test Flow:**
+```
+1. Login to application
+2. Navigate to /saved-claims
+3. Wait for saved claims list to load
+4. Find first available claim card
+5. Click on the claim card
+6. Wait for claim details to load
+7. Verify details section is visible
+8. Take screenshot (saved-claims-details.png)
+```
+
+**When to use:**
+- After modifying saved claims page
+- After changing claim detail loading logic
+- After updating claim card components
+- To verify claim details API integration
+- When claims list is empty, tests empty state
+
+**Screenshot:** `saved-claims-details.png`
+
+**Note:** If no saved claims exist, test will screenshot the empty state (this is expected behavior)
+
+---
+
+## Environment Variables
+
+All tests support these environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BASE_URL` | `http://localhost:3000` | URL of your Next.js application |
+| `HEADLESS` | `true` | Set to `false` to see browser (use `:watch` commands instead) |
+| `LOGIN_EMAIL` | `testuser@example.com` | Email for authentication |
+| `LOGIN_PASSWORD` | `SuperSecret123!` | Password for authentication |
+
+### Setting Environment Variables
+
+**PowerShell (Windows):**
+```powershell
+$env:BASE_URL = "http://localhost:3001"
+$env:LOGIN_EMAIL = "user@example.com"
+$env:LOGIN_PASSWORD = "password123"
+npm run test:puppeteer:login:watch
+```
+
+**Bash/Unix:**
+```bash
+BASE_URL=http://localhost:3001 \
+LOGIN_EMAIL=user@example.com \
+LOGIN_PASSWORD=password123 \
+npm run test:puppeteer:login:watch
+```
+
+**Or use the `:watch` commands** (they set `HEADLESS=false` automatically):
+```bash
+npm run test:puppeteer:login:watch
 ```
 
 ---
 
-## 📊 Testing Your Login Screen - Complete Flow
+## Understanding Test Results
 
-### Step-by-Step Breakdown
+### Success Output
 
-```javascript
-// 1. SETUP
-const browser = await puppeteer.launch({ headless: false });
-const page = await browser.newPage();
-
-// 2. NAVIGATE
-await page.goto('http://localhost:3000/login', {
-  waitUntil: 'networkidle2'  // Wait for all network activity
-});
-
-// 3. WAIT FOR ELEMENTS
-await page.waitForSelector('input[type="email"]', { visible: true });
-await page.waitForSelector('input[type="password"]', { visible: true });
-
-// 4. INTERACT
-await page.type('input[type="email"]', 'user@example.com', { delay: 30 });
-await page.type('input[type="password"]', 'password123', { delay: 30 });
-
-// 5. MONITOR NETWORK
-const loginRequestPromise = page.waitForRequest(
-  req => req.url().includes('/auth/login')
-);
-
-// 6. SUBMIT
-await page.click('button[type="submit"]');
-
-// 7. WAIT FOR RESPONSE
-await loginRequestPromise;
-
-// 8. WAIT FOR NAVIGATION
-await page.waitForNavigation({ waitUntil: 'networkidle2' });
-
-// 9. VERIFY
-const url = page.url();
-console.log('Current URL:', url);
-
-// 10. CAPTURE
-await page.screenshot({ 
-  path: 'login-success.png',
-  fullPage: true 
-});
-
-// 11. CLEANUP
-await browser.close();
+When a test passes, you'll see:
+```
+Navigating to http://localhost:3000/login ...
+Filling login form...
+Setting up navigation listener...
+Setting up login request listener...
+Clicking submit button...
+Detected login request: POST http://localhost:3000/auth/login
+Login request detected or timeout reached
+Navigation detected or timeout reached
+Waiting for page to settle...
+Current URL: http://localhost:3000/dashboard
+Successfully redirected to dashboard
+Login smoke test completed. Screenshot: login-page-smoke.png
 ```
 
-### What Each Step Does Internally
+### Failure Output
 
-1. **Launch**: Spawns Chrome process, establishes CDP connection
-2. **Navigate**: Sends HTTP request, receives HTML, parses DOM, executes JS
-3. **Wait**: Polls DOM until selector appears
-4. **Type**: Simulates keyboard events, triggers React onChange handlers
-5. **Monitor**: Listens to CDP Network domain events
-6. **Click**: Simulates mouse click, triggers onClick handlers
-7. **Wait**: Monitors network until login request appears
-8. **Navigate**: Waits for location change, new page load
-9. **Verify**: Reads current URL from browser
-10. **Screenshot**: Renders viewport to bitmap, encodes PNG, saves file
-11. **Close**: Terminates Chrome process, closes CDP connection
+When a test fails, you'll see:
+```
+ERROR: Puppeteer Login test failed: TimeoutError: Waiting for selector...
+Error screenshot saved: login-test-error.png
+Current page URL: http://localhost:3000/login
+```
+
+### Screenshots
+
+Each test creates screenshots:
+
+| Test | Success Screenshot | Error Screenshot |
+|------|-------------------|------------------|
+| Login | `login-page-smoke.png` | `login-test-error.png` |
+| Analysis | `analysis-form-submission.png` | `analysis-test-error.png` |
+| Saved Claims Nav | `saved-claims-navigation.png` | `saved-claims-nav-test-error.png` |
+| Saved Claims Details | `saved-claims-details.png` | `saved-claims-details-test-error.png` |
+
+**Screenshots are saved in the `zoe-frontend` directory** (same level as `package.json`).
 
 ---
 
-## 🛠️ Debugging Tips
+## Troubleshooting
 
-### 1. **Slow Down Execution**
+### Test Fails with "Cannot find module 'puppeteer'"
 
-```javascript
-// Add delays to see what's happening
-await page.type('#email', email, { delay: 100 });
-await new Promise(resolve => setTimeout(resolve, 1000));
+**Solution:**
+```bash
+npm install
 ```
 
-### 2. **Take Screenshots at Key Points**
+### Test Times Out
 
-```javascript
-await page.screenshot({ path: 'step1-loaded.png' });
-await page.type('#email', email);
-await page.screenshot({ path: 'step2-typed.png' });
+**Possible causes:**
+1. **Dev server not running** - Make sure `npm run dev` is running
+2. **Wrong BASE_URL** - Check your server port matches BASE_URL
+3. **Slow network** - Increase timeout in test file (not recommended)
+4. **Page not loading** - Check browser console for errors
+
+**Solution:**
+- Verify dev server is running: `curl http://localhost:3000`
+- Check BASE_URL matches your server port
+- Run with `:watch` to see what's happening
+
+### "Login failed" Error
+
+**Possible causes:**
+1. **Wrong credentials** - Check LOGIN_EMAIL and LOGIN_PASSWORD
+2. **Backend not running** - Authentication requires backend API
+3. **Account locked/inactive** - Check user status in database
+
+**Solution:**
+```powershell
+# Verify credentials are set
+$env:LOGIN_EMAIL
+$env:LOGIN_PASSWORD
+
+# Try logging in manually in browser first
 ```
 
-### 3. **Log Page Content**
+### Test Can't Find Elements
 
-```javascript
-const content = await page.evaluate(() => document.body.innerText);
-console.log('Page content:', content);
+**Possible causes:**
+1. **Page structure changed** - Selectors might be outdated
+2. **Page not fully loaded** - React might not have hydrated
+3. **Different UI state** - Element might be conditionally rendered
+
+**Solution:**
+- Run with `:watch` to see the page
+- Check error screenshot to see what's on the page
+- Verify selectors match current HTML structure
+
+### Browser Won't Launch
+
+**Solution:**
+```bash
+# Reinstall Puppeteer's Chromium
+npx puppeteer browsers install chrome
 ```
 
-### 4. **Check Network Requests**
+### Port Already in Use
 
-```javascript
-page.on('request', request => console.log('→', request.method(), request.url()));
-page.on('response', response => console.log('←', response.status(), response.url()));
-```
-
-### 5. **Run with Visible Browser**
-
-```javascript
-const browser = await puppeteer.launch({ headless: false });
-// Watch the browser to see what's happening
+**Solution:**
+```powershell
+# Use different port
+$env:BASE_URL = "http://localhost:3001"
+npm run test:puppeteer:login:watch
 ```
 
 ---
 
-## 📝 Summary
+## Best Practices
 
-**Puppeteer Testing Flow:**
-1. Launch browser → Create page
-2. Navigate → Wait for load
-3. Find elements → Wait for visibility
-4. Interact → Type, click, etc.
-5. Monitor → Network requests, navigation
-6. Assert → Verify state
-7. Capture → Screenshots
-8. Cleanup → Close browser
+### 1. Run Tests Before Committing
 
-**Screenshot Process:**
-1. Chrome renders DOM to bitmap
-2. Encodes bitmap as PNG/JPEG
-3. Sends via CDP to Puppeteer
-4. Puppeteer writes to file system
+```bash
+# Quick smoke test before commit
+npm run test:puppeteer:login
+npm run test:puppeteer:analysis
+```
 
-**Key Takeaways:**
-- Always wait for elements before interacting
-- Use `networkidle2` for reliable page loads
-- Take screenshots for debugging
-- Handle errors gracefully
-- Clean up browser instances
+### 2. Use Watch Mode for Debugging
+
+When a test fails, always run with `:watch` to see what's happening:
+```bash
+npm run test:puppeteer:login:watch
+```
+
+### 3. Check Screenshots
+
+After test runs, check the screenshots:
+- **Success screenshots** - Verify UI looks correct
+- **Error screenshots** - See what went wrong
+
+### 4. Keep Credentials Secure
+
+**Never commit credentials to git:**
+```bash
+# Add to .gitignore (if not already)
+echo "*.env" >> .gitignore
+echo ".env.local" >> .gitignore
+```
+
+**Use environment variables:**
+```powershell
+# Set in your shell session (not in code)
+$env:LOGIN_EMAIL = "your-email@example.com"
+```
+
+### 5. Run Tests in Order
+
+Some tests depend on others:
+1. **Login test** - Should always work first
+2. **Analysis test** - Requires login
+3. **Navigation test** - Requires login
+4. **Details test** - Requires login + saved claims data
+
+### 6. Test After Backend Changes
+
+When backend API changes:
+- Run all tests to ensure frontend still works
+- Check for new error messages
+- Verify API request formats
+
+### 7. Update Tests When UI Changes
+
+If you change:
+- Button text → Update test selectors
+- Form field names → Update test selectors
+- Page routes → Update test URLs
+- Component structure → Update test logic
 
 ---
 
-## 🚀 Next Steps
+## Test File Locations
 
-1. **Read your test files**: `scripts/test-*.js`
-2. **Run tests**: `npm run test:puppeteer:login:watch`
-3. **Modify tests**: Add your own assertions
-4. **Create new tests**: Copy existing test as template
-5. **Integrate CI/CD**: Run tests automatically
+All test files are in `zoe-frontend/scripts/`:
+
+```
+scripts/
+├── test-login-page.js              # Login authentication test
+├── test-analysis-page.js           # Analysis form submission test
+├── test-saved-claims-navigation.js # Header navigation test
+├── test-saved-claims-page.js       # Claim details loading test
+└── fixtures/
+    └── medical-record.txt          # Test file for uploads
+```
 
 ---
 
-**Happy Testing! 🎉**
+## Quick Reference
 
+### Run All Tests
+```bash
+npm run test:puppeteer:login:watch
+npm run test:puppeteer:analysis:watch
+npm run test:puppeteer:saved-claims-nav:watch
+npm run test:puppeteer:saved-claims:watch
+```
+
+### Check Test Results
+```bash
+# List screenshots
+ls *.png
+
+# View latest screenshot (PowerShell)
+Start-Process login-page-smoke.png
+```
+
+### Common Commands
+```bash
+# Run test with custom server
+BASE_URL=http://localhost:3001 npm run test:puppeteer:login:watch
+
+# Run test with custom credentials
+LOGIN_EMAIL=test@example.com LOGIN_PASSWORD=pass123 npm run test:puppeteer:login:watch
+
+# Run headless (faster, no browser window)
+npm run test:puppeteer:login
+```
+
+---
+
+## What Each Test Validates
+
+### Login Test Validates:
+- ✅ Login page renders
+- ✅ Form submission works
+- ✅ Authentication API integration
+- ✅ Redirect after login
+- ✅ Session management
+
+### Analysis Form Test Validates:
+- ✅ Form fields are accessible
+- ✅ File upload functionality
+- ✅ Form validation
+- ✅ API request submission
+- ✅ Button interactions
+
+### Saved Claims Navigation Test Validates:
+- ✅ Header component renders
+- ✅ Navigation links work
+- ✅ Routing configuration
+- ✅ Page transitions
+
+### Saved Claims Details Test Validates:
+- ✅ Claims list loading
+- ✅ Claim card interactions
+- ✅ Details API integration
+- ✅ UI state management
+- ✅ Empty state handling
+
+---
+
+## Integration with CI/CD
+
+These tests can be integrated into your CI/CD pipeline:
+
+```yaml
+# Example GitHub Actions
+- name: Run Puppeteer Tests
+  run: |
+    npm run dev &
+    sleep 10
+    npm run test:puppeteer:login
+    npm run test:puppeteer:analysis
+```
+
+**Note:** CI environments typically run headless by default.
+
+---
+
+## Getting Help
+
+If tests fail:
+
+1. **Check error screenshot** - See what the page looks like
+2. **Run with `:watch`** - Watch the browser to see what happens
+3. **Verify dev server** - Make sure it's running and accessible
+4. **Check credentials** - Verify LOGIN_EMAIL and LOGIN_PASSWORD are set
+5. **Review console output** - Look for specific error messages
+
+---
+
+## Summary
+
+These Puppeteer tests provide:
+- **Automated verification** of critical user flows
+- **Visual documentation** via screenshots
+- **Regression detection** before deployment
+- **Quick feedback** during development
+
+Run them regularly to ensure your application works as expected!
+
+---
+
+**Last Updated:** Based on current test suite in `zoe-frontend/scripts/`
 
