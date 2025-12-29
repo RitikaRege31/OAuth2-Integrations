@@ -1,595 +1,815 @@
-# Puppeteer Testing Guide for Developers
-
-## Table of Contents
-1. [Overview](#overview)
-2. [Prerequisites](#prerequisites)
-3. [Available Tests](#available-tests)
-4. [Running Tests](#running-tests)
-5. [Test Details](#test-details)
-6. [Environment Variables](#environment-variables)
-7. [Understanding Test Results](#understanding-test-results)
-8. [Troubleshooting](#troubleshooting)
-9. [Best Practices](#best-practices)
-
----
+# Notifications System Architecture & Data Flow
 
 ## Overview
 
-Puppeteer tests are end-to-end (E2E) tests that automate browser interactions to verify your application works correctly. These tests:
+The ARIA application uses a **dual notification system** that combines:
+1. **REST API Notifications** - Historical/persisted notifications fetched from a backend API
+2. **PubSub Real-time Notifications** - Live notifications delivered via Google Cloud PubSub and Socket.IO
 
-- **Simulate real user behavior** - Click buttons, fill forms, navigate pages
-- **Test against real backend** - All tests use your actual API (no mocking)
-- **Capture visual evidence** - Screenshots saved for verification
-- **Catch regressions** - Ensure features still work after code changes
-
-### Why Use These Tests?
-
-- **Before deploying** - Verify critical user flows work
-- **After refactoring** - Ensure you didn't break anything
-- **During development** - Quick feedback on your changes
-- **Documentation** - Tests serve as examples of how features work
+Both systems work together to provide a complete notification experience with real-time updates and historical data.
 
 ---
 
-## Prerequisites
+## System Architecture Diagram
 
-### 1. Install Dependencies
-```bash
-npm install
 ```
-
-### 2. Start Your Development Server
-In one terminal:
-```bash
-npm run dev
-```
-
-The server should be running on `http://localhost:3000` (or your configured port).
-
-### 3. Set Up Test Credentials
-All tests require authentication. Set your credentials:
-
-**PowerShell:**
-```powershell
-$env:LOGIN_EMAIL = "your-email@example.com"
-$env:LOGIN_PASSWORD = "your-password"
-```
-
-**Bash/Unix:**
-```bash
-export LOGIN_EMAIL="your-email@example.com"
-export LOGIN_PASSWORD="your-password"
-```
-
----
-
-## Available Tests
-
-Your project has **4 Puppeteer tests**, each covering a different user interaction:
-
-| Test | Command | Purpose |
-|------|---------|---------|
-| **Login Test** | `test:puppeteer:login` | Tests user authentication flow |
-| **Analysis Form Test** | `test:puppeteer:analysis` | Tests claim analysis form submission |
-| **Saved Claims Navigation** | `test:puppeteer:saved-claims-nav` | Tests header navigation to saved claims |
-| **Saved Claims Details** | `test:puppeteer:saved-claims` | Tests clicking a claim to view details |
-
-Each test has two variants:
-- **Headless** (default) - Browser runs invisibly, faster
-- **Watch** (`:watch`) - Browser visible, better for debugging
-
----
-
-## Running Tests
-
-### Quick Start
-
-**Run all tests in headless mode:**
-```bash
-npm run test:puppeteer:login
-npm run test:puppeteer:analysis
-npm run test:puppeteer:saved-claims-nav
-npm run test:puppeteer:saved-claims
-```
-
-**Run with visible browser (recommended for first time):**
-```bash
-npm run test:puppeteer:login:watch
-npm run test:puppeteer:analysis:watch
-npm run test:puppeteer:saved-claims-nav:watch
-npm run test:puppeteer:saved-claims:watch
-```
-
-### Test Execution Flow
-
-1. **Test starts** → Launches Chrome browser
-2. **Logs in** (if needed) → Uses credentials from env vars
-3. **Performs actions** → Clicks, types, navigates
-4. **Waits for responses** → Monitors network requests
-5. **Takes screenshot** → Saves visual proof
-6. **Closes browser** → Cleanup
-
----
-
-## Test Details
-
-### 1. Login Test (`test-login-page.js`)
-
-**Purpose:** Verifies the authentication flow works end-to-end.
-
-**What it tests:**
-- Login page loads correctly
-- Form fields are accessible
-- User can enter email and password
-- Login request is sent to backend
-- Successful login redirects to dashboard
-- Failed login shows appropriate error
-
-**Test Flow:**
-```
-1. Navigate to /login
-2. Wait for login form to load
-3. Fill email and password fields
-4. Click submit button
-5. Wait for /auth/login API request
-6. Wait for navigation to /dashboard
-7. Verify we're on dashboard page
-8. Take screenshot (login-page-smoke.png)
-```
-
-**When to use:**
-- After changing login logic
-- After modifying authentication flow
-- Before deploying authentication changes
-- To verify backend authentication works
-
-**Screenshot:** `login-page-smoke.png`
-
----
-
-### 2. Analysis Form Test (`test-analysis-page.js`)
-
-**Purpose:** Verifies the claim analysis form can be filled and submitted.
-
-**What it tests:**
-- Dashboard loads after login
-- Analysis form is visible and accessible
-- All form fields can be filled (Claim ID, notes, comments)
-- File upload works (medical records)
-- "Start Analysis" button is clickable
-- Form submission triggers `/api/start_analysis` request
-- UI updates after submission
-
-**Test Flow:**
-```
-1. Login to application
-2. Navigate to /dashboard
-3. Wait for Analysis form to load
-4. Fill Claim ID field
-5. Fill Claim Notes textarea
-6. Fill Biller Comments textarea
-7. Upload medical record file (from fixtures/)
-8. Find and click "Start Analysis" button
-9. Wait for /api/start_analysis POST request
-10. Take screenshot (analysis-form-submission.png)
-```
-
-**When to use:**
-- After modifying Analysis form component
-- After changing form validation
-- After updating file upload logic
-- To verify form submission works
-- Before deploying form changes
-
-**Screenshot:** `analysis-form-submission.png`
-
-**Note:** Uses test file from `scripts/fixtures/medical-record.txt` (auto-created if missing)
-
----
-
-### 3. Saved Claims Navigation Test (`test-saved-claims-navigation.js`)
-
-**Purpose:** Verifies navigation from dashboard to saved claims page via header button.
-
-**What it tests:**
-- Header "Saved Claims" button is visible
-- Button is clickable
-- Clicking button navigates to `/saved-claims`
-- Navigation completes successfully
-- Saved claims page loads
-
-**Test Flow:**
-```
-1. Login to application
-2. Navigate to /dashboard
-3. Wait for dashboard to load
-4. Find "Saved Claims" link in header
-5. Click the link
-6. Wait for navigation to /saved-claims
-7. Verify URL contains /saved-claims
-8. Take screenshot (saved-claims-navigation.png)
-```
-
-**When to use:**
-- After modifying header navigation
-- After changing routing logic
-- After updating AppHeader component
-- To verify navigation works correctly
-
-**Screenshot:** `saved-claims-navigation.png`
-
----
-
-### 4. Saved Claims Details Test (`test-saved-claims-page.js`)
-
-**Purpose:** Verifies clicking on a saved claim loads its details correctly.
-
-**What it tests:**
-- Saved claims page loads
-- Claims list is displayed (or empty state)
-- Claim cards are clickable
-- Clicking a claim loads details
-- Claim details section appears
-- Details contain expected information
-
-**Test Flow:**
-```
-1. Login to application
-2. Navigate to /saved-claims
-3. Wait for saved claims list to load
-4. Find first available claim card
-5. Click on the claim card
-6. Wait for claim details to load
-7. Verify details section is visible
-8. Take screenshot (saved-claims-details.png)
-```
-
-**When to use:**
-- After modifying saved claims page
-- After changing claim detail loading logic
-- After updating claim card components
-- To verify claim details API integration
-- When claims list is empty, tests empty state
-
-**Screenshot:** `saved-claims-details.png`
-
-**Note:** If no saved claims exist, test will screenshot the empty state (this is expected behavior)
-
----
-
-## Environment Variables
-
-All tests support these environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `BASE_URL` | `http://localhost:3000` | URL of your Next.js application |
-| `HEADLESS` | `true` | Set to `false` to see browser (use `:watch` commands instead) |
-| `LOGIN_EMAIL` | `testuser@example.com` | Email for authentication |
-| `LOGIN_PASSWORD` | `SuperSecret123!` | Password for authentication |
-
-### Setting Environment Variables
-
-**PowerShell (Windows):**
-```powershell
-$env:BASE_URL = "http://localhost:3001"
-$env:LOGIN_EMAIL = "user@example.com"
-$env:LOGIN_PASSWORD = "password123"
-npm run test:puppeteer:login:watch
-```
-
-**Bash/Unix:**
-```bash
-BASE_URL=http://localhost:3001 \
-LOGIN_EMAIL=user@example.com \
-LOGIN_PASSWORD=password123 \
-npm run test:puppeteer:login:watch
-```
-
-**Or use the `:watch` commands** (they set `HEADLESS=false` automatically):
-```bash
-npm run test:puppeteer:login:watch
+┌─────────────────────────────────────────────────────────────────┐
+│                    NOTIFICATION SOURCES                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  1. REST API                   2. Google Cloud PubSub          │
+│     (Historical)                  (Real-time)                   │
+│         │                              │                        │
+│         │                              │                        │
+│         ▼                              ▼                        │
+│  ┌─────────────┐              ┌──────────────────┐            │
+│  │ Backend API │              │ PubSub Topic     │            │
+│  │  Endpoint   │              │ (GCP)             │            │
+│  └─────────────┘              └──────────────────┘            │
+│         │                              │                        │
+│         │                              │                        │
+└─────────┼──────────────────────────────┼────────────────────────┘
+          │                              │
+          │                              │
+          ▼                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    FRONTEND LAYER                              │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  NotificationPanel Component                            │  │
+│  │  - Displays notifications                                │  │
+│  │  - Handles user interactions                             │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                           ▲                                     │
+│                           │                                     │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  Redux Store (notificationsSlice)                        │  │
+│  │  - Centralized state management                          │  │
+│  │  - Deduplication logic                                   │  │
+│  │  - Read/unread tracking                                  │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│         ▲                              ▲                         │
+│         │                              │                         │
+│         │                              │                         │
+│  ┌──────────────┐              ┌──────────────┐               │
+│  │ useNotifications│            │ useSocketRedux│               │
+│  │ Hook           │            │ Hook         │               │
+│  └──────────────┘              └──────────────┘               │
+│         │                              │                         │
+│         │                              │                         │
+│  ┌──────────────┐              ┌──────────────┐               │
+│  │ notificationsApi│           │ Socket.IO    │               │
+│  │ Service       │             │ Client        │               │
+│  └──────────────┘              └──────────────┘               │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+          │                              │
+          │                              │
+          ▼                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    SERVER LAYER                                │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  Next.js API Routes                                      │  │
+│  │  - /api/health                                           │  │
+│  │  - /api/pubsub/status                                    │  │
+│  │  - /api/socket.io (Socket.IO endpoint)                   │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                           ▲                                     │
+│                           │                                     │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  Socket.IO Server                                        │  │
+│  │  - Manages WebSocket connections                         │  │
+│  │  - Handles client authentication                         │  │
+│  │  - Broadcasts notifications                              │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│         ▲                              ▲                         │
+│         │                              │                         │
+│  ┌──────────────┐              ┌──────────────┐               │
+│  │ socket-handlers│           │ pubsub-      │               │
+│  │               │            │ standalone   │               │
+│  └──────────────┘              └──────────────┘               │
+│         │                              │                         │
+│         │                              │                         │
+│  ┌──────────────┐              ┌──────────────┐               │
+│  │ connection-  │              │ pubsub-      │               │
+│  │ manager      │              │ listener     │               │
+│  └──────────────┘              └──────────────┘               │
+│                                 │                               │
+│                                 ▼                               │
+│                        ┌──────────────┐                        │
+│                        │ message-     │                        │
+│                        │ router       │                        │
+│                        └──────────────┘                        │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Understanding Test Results
+## End-to-End Data Flow
 
-### Success Output
+### Flow 1: REST API Notifications (Historical Data)
 
-When a test passes, you'll see:
+**Purpose**: Load previously saved notifications when the user first opens the app.
+
 ```
-Navigating to http://localhost:3000/login ...
-Filling login form...
-Setting up navigation listener...
-Setting up login request listener...
-Clicking submit button...
-Detected login request: POST http://localhost:3000/auth/login
-Login request detected or timeout reached
-Navigation detected or timeout reached
-Waiting for page to settle...
-Current URL: http://localhost:3000/dashboard
-Successfully redirected to dashboard
-Login smoke test completed. Screenshot: login-page-smoke.png
+1. User Opens App
+   │
+   ▼
+2. NotificationPanel Component Mounts
+   │
+   ▼
+3. useNotificationsInitialLoad Hook Executes
+   │
+   ▼
+4. fetchNotifications() Called (notificationsApi.ts)
+   │
+   ├─► GET /api/v1/notification/recent?limit=15
+   │   │
+   │   ├─► Headers: Authorization: Bearer <token>
+   │   │
+   │   └─► Response: { success: true, notifications: [...] }
+   │
+   ▼
+5. parseNotificationsResponse() Transforms Data
+   │
+   ├─► Maps API format to internal Notification format
+   │   - Adds 'api-' prefix to messageId
+   │   - Extracts user_id, priority, task_id, etc.
+   │   - Sets source: 'api'
+   │
+   ▼
+6. Redux Action: loadNotifications()
+   │
+   ├─► Stores in notificationsSlice
+   │   - Sets isInitialLoadComplete = true
+   │   - Sorts by timestamp (newest first)
+   │   - Preserves read status if notification already exists
+   │
+   ▼
+7. NotificationPanel Renders Notifications
+   │
+   └─► User sees historical notifications
 ```
 
-### Failure Output
-
-When a test fails, you'll see:
-```
-ERROR: Puppeteer Login test failed: TimeoutError: Waiting for selector...
-Error screenshot saved: login-test-error.png
-Current page URL: http://localhost:3000/login
-```
-
-### Screenshots
-
-Each test creates screenshots:
-
-| Test | Success Screenshot | Error Screenshot |
-|------|-------------------|------------------|
-| Login | `login-page-smoke.png` | `login-test-error.png` |
-| Analysis | `analysis-form-submission.png` | `analysis-test-error.png` |
-| Saved Claims Nav | `saved-claims-navigation.png` | `saved-claims-nav-test-error.png` |
-| Saved Claims Details | `saved-claims-details.png` | `saved-claims-details-test-error.png` |
-
-**Screenshots are saved in the `zoe-frontend` directory** (same level as `package.json`).
+**Key Points**:
+- Runs once on initial page load
+- Fetches up to 15 most recent notifications
+- Uses bearer token for authentication
+- Sets `isInitialLoadComplete` flag to allow PubSub messages
 
 ---
 
-## Troubleshooting
+### Flow 2: PubSub Real-time Notifications
 
-### Test Fails with "Cannot find module 'puppeteer'"
+**Purpose**: Deliver live notifications as they are published to the PubSub topic.
 
-**Solution:**
-```bash
-npm install
+```
+1. External System Publishes to PubSub Topic
+   │
+   ├─► Message Structure:
+   │   {
+   │     "data": { "message": "...", "user_id": "abc123", ... },
+   │     "attributes": { "user_id": "abc123", "routing": "user" }
+   │   }
+   │
+   ▼
+2. PubSub Subscription Receives Message
+   │
+   ▼
+3. pubsub-listener.ts (PubSubListener Class)
+   │
+   ├─► Listens to Google Cloud PubSub subscription
+   │   - Configurable maxMessages (default: 10)
+   │   - Automatic retry with exponential backoff
+   │   - Handles connection errors gracefully
+   │
+   ├─► Emits 'message' event with PubSub Message object
+   │
+   ▼
+4. pubsub-standalone.ts (Message Handler)
+   │
+   ├─► Receives message from PubSubListener
+   │
+   ├─► parseMessageData() - Parses JSON from message.data
+   │
+   ├─► Extracts user_id from:
+   │   - message.attributes.user_id
+   │   - parsedMessage.data.user_id
+   │
+   ├─► User Filtering Logic:
+   │   ├─► If no user_id → Skip message (ack & return)
+   │   ├─► Check if any connected user matches user_id
+   │   └─► If no matching user → Skip message (ack & return)
+   │
+   ├─► Creates payload:
+   │   {
+   │     messageId: message.id,
+   │     publishTime: message.publishTime,
+   │     attributes: message.attributes,
+   │     data: parsedMessage.data,
+   │     timestamp: new Date().toISOString(),
+   │     source: 'pubsub'
+   │   }
+   │
+   ├─► Gets routing config from message attributes
+   │
+   ├─► Checks Socket.IO Server Availability:
+   │   ├─► If no clients connected → Queue message
+   │   └─► If clients available → Route immediately
+   │
+   ▼
+5. message-router.ts (Routing Logic)
+   │
+   ├─► extractUserIdFromPayload() - Gets user_id from payload
+   │
+   ├─► If user_id exists:
+   │   ├─► Find all Socket.IO connections with matching userId
+   │   ├─► Emit 'notification' event to those sockets only
+   │   └─► Return routing result
+   │
+   ├─► If no user_id (fallback):
+   │   └─► Use routing strategy (broadcast/room/user)
+   │
+   ▼
+6. Socket.IO Server Broadcasts
+   │
+   ├─► io.to(socketId).emit('notification', payload)
+   │   - Only sends to sockets with matching userId
+   │
+   ▼
+7. Client Receives via Socket.IO
+   │
+   ├─► useSocketRedux Hook Listens for 'notification' event
+   │
+   ├─► handleNotification() Handler:
+   │   ├─► Transforms payload to Notification format
+   │   ├─► Dispatches addNotification() Redux action
+   │   └─► Calls optional onNotification callback
+   │
+   ▼
+8. Redux Store Updates
+   │
+   ├─► notificationsSlice.addNotification() Reducer:
+   │   ├─► Checks for duplicates by messageId
+   │   ├─► Adds to notifications array (unshift - newest first)
+   │   ├─► Updates unreadCount
+   │   └─► Sets lastNotification
+   │
+   ▼
+9. NotificationPanel Re-renders
+   │
+   └─► User sees new notification in real-time
 ```
 
-### Test Times Out
+**Key Points**:
+- Real-time delivery via WebSocket
+- User-based filtering ensures only matching users receive notifications
+- Queue system handles messages when no clients are connected
+- Automatic deduplication in Redux store
 
-**Possible causes:**
-1. **Dev server not running** - Make sure `npm run dev` is running
-2. **Wrong BASE_URL** - Check your server port matches BASE_URL
-3. **Slow network** - Increase timeout in test file (not recommended)
-4. **Page not loading** - Check browser console for errors
+---
 
-**Solution:**
-- Verify dev server is running: `curl http://localhost:3000`
-- Check BASE_URL matches your server port
-- Run with `:watch` to see what's happening
+## Detailed File Roles
 
-### "Login failed" Error
+### Client-Side Files
 
-**Possible causes:**
-1. **Wrong credentials** - Check LOGIN_EMAIL and LOGIN_PASSWORD
-2. **Backend not running** - Authentication requires backend API
-3. **Account locked/inactive** - Check user status in database
+#### 1. `components/NotificationPanel.tsx`
+**Role**: UI component that displays notifications to the user
 
-**Solution:**
-```powershell
-# Verify credentials are set
-$env:LOGIN_EMAIL
-$env:LOGIN_PASSWORD
+**Responsibilities**:
+- Renders notification bell icon with unread count badge
+- Shows dropdown panel with list of notifications
+- Handles user interactions (mark as read, dismiss, mark all read)
+- Formats timestamps (e.g., "5m ago", "2h ago")
+- Categorizes notifications by type (pubsub, batch, ingestion, system)
+- Sorts notifications (unread first, then by timestamp)
+- Calls `useNotificationsInitialLoad()` to fetch API notifications on mount
 
-# Try logging in manually in browser first
+**Key Features**:
+- Click outside to close
+- Visual indicators for unread notifications
+- Empty state when no notifications
+- Responsive design
+
+---
+
+#### 2. `hooks/useNotifications.ts`
+**Role**: React hook for fetching notifications from REST API
+
+**Responsibilities**:
+- `useNotifications()` - General hook for fetching notifications
+  - Supports fetch on mount, merge mode, custom token
+  - Prevents concurrent fetches
+  - Only fetches when user is authenticated
+
+- `useNotificationsInitialLoad()` - Specialized hook for initial load
+  - Fetches once on mount
+  - Sets `isInitialLoadComplete` flag in Redux
+  - Ensures API notifications load before PubSub messages
+
+**Key Features**:
+- Prevents duplicate fetches
+- Handles authentication state
+- Supports both replace and merge modes
+
+---
+
+#### 3. `hooks/useSocketRedux.ts`
+**Role**: React hook that manages Socket.IO client connection and events
+
+**Responsibilities**:
+- Creates and manages Socket.IO client instance
+- Registers event listeners:
+  - `connect` / `disconnect` - Connection state
+  - `notification` - Receives PubSub notifications
+  - `message` - Receives general messages
+  - `authenticated` - Confirms authentication
+  - `subscribed` / `unsubscribed` - Room subscriptions
+- Transforms incoming notification payloads to Redux format
+- Dispatches Redux actions for notifications and messages
+- Provides helper functions:
+  - `authenticate(userId, token)` - Authenticate socket connection
+  - `subscribe(room)` / `unsubscribe(room)` - Room management
+  - `sendMessage(data)` - Send messages to server
+
+**Key Features**:
+- Auto-connects by default
+- Handles reconnection logic
+- Updates Redux state for connection status
+
+---
+
+#### 4. `components/providers/SocketProvider.tsx`
+**Role**: React provider that initializes Socket.IO and authenticates connections
+
+**Responsibilities**:
+- Wraps app with Socket.IO initialization
+- Calls `/api/health` and `/api/pubsub/status` on mount to ensure server is ready
+- Automatically authenticates Socket.IO connection when:
+  - Socket is connected
+  - User is authenticated
+  - User ID is available
+- Uses `useSocketRedux` hook internally
+
+**Key Features**:
+- Automatic authentication on login
+- Server health checks
+- Retry logic for server initialization
+
+---
+
+#### 5. `lib/services/notificationsApi.ts`
+**Role**: Service layer for REST API notification endpoints
+
+**Responsibilities**:
+- `fetchNotifications(token?, limit)` - Fetches notifications from API
+  - Validates and clamps limit (1-100)
+  - Handles authentication via bearer token
+  - Error handling (401, 400, 404, 500)
+  - Returns empty array on non-critical errors
+
+- `parseNotificationsResponse()` - Transforms API response
+  - Maps API format to internal Notification format
+  - Adds `api-` prefix to messageId
+  - Extracts user_id, priority, task_id to attributes
+  - Sets source: 'api'
+
+- `getNotificationsApiEndpoint()` - Returns API endpoint URL
+  - Uses `NEXT_PUBLIC_NOTIFICATIONS_API_URL` env var
+  - Defaults to `/api/v1/notification/recent`
+
+**Key Features**:
+- Graceful error handling
+- Token support for server-side calls
+- Type-safe response parsing
+
+---
+
+#### 6. `lib/store/slices/notificationsSlice.ts`
+**Role**: Redux slice for notification state management
+
+**State Structure**:
+```typescript
+{
+  notifications: Notification[],
+  unreadCount: number,
+  lastNotification: Notification | null,
+  isInitialLoadComplete: boolean
+}
 ```
 
-### Test Can't Find Elements
+**Reducers**:
+- `addNotification` - Adds new notification (from PubSub or API)
+  - Checks for duplicates by messageId
+  - Handles API notifications (api-* prefix)
+  - Increments unreadCount
+  - Adds to beginning of array (newest first)
 
-**Possible causes:**
-1. **Page structure changed** - Selectors might be outdated
-2. **Page not fully loaded** - React might not have hydrated
-3. **Different UI state** - Element might be conditionally rendered
+- `loadNotifications` - Replaces all notifications (initial API load)
+  - Preserves read status for existing notifications
+  - Sorts by timestamp
+  - Sets isInitialLoadComplete = true
 
-**Solution:**
-- Run with `:watch` to see the page
-- Check error screenshot to see what's on the page
-- Verify selectors match current HTML structure
+- `mergeNotifications` - Merges API notifications with existing
+  - Avoids duplicates
+  - Only adds new notifications
 
-### Browser Won't Launch
+- `markNotificationAsRead` - Marks single notification as read
+- `markAllNotificationsAsRead` - Marks all as read
+- `removeNotification` - Removes notification from list
+- `clearNotifications` - Clears all notifications
+- `setInitialLoadComplete` - Sets initial load flag
 
-**Solution:**
-```bash
-# Reinstall Puppeteer's Chromium
-npx puppeteer browsers install chrome
+**Key Features**:
+- Automatic deduplication
+- Read/unread tracking
+- Timestamp-based sorting
+- Handles both API and PubSub sources
+
+---
+
+### Server-Side Files
+
+#### 7. `lib/server/startup.ts`
+**Role**: Server initialization module
+
+**Responsibilities**:
+- Auto-initializes PubSub listener on server startup
+- Calls `initializeStandalonePubSub()` when module loads
+- Ensures PubSub starts listening as soon as server is ready
+- Prevents duplicate initialization
+
+**Key Features**:
+- Runs only on server-side (checks `typeof window === 'undefined'`)
+- One-time initialization with promise caching
+
+---
+
+#### 8. `lib/server/pubsub-config/pubsub-config.ts`
+**Role**: Configuration for Google Cloud PubSub
+
+**Responsibilities**:
+- Provides PubSub configuration from environment variables
+- Returns:
+  - `projectId` - GCP project ID
+  - `subscriptionName` - PubSub subscription name
+  - `topicName` - PubSub topic name
+
+**Environment Variables**:
+- `GCP_PROJECT_ID` (default: 'gabeo-poc')
+- `PUBSUB_SUBSCRIPTION` (default: full subscription path)
+- `PUBSUB_TOPIC` (default: full topic path)
+
+---
+
+#### 9. `lib/server/pubsub-listener.ts`
+**Role**: Low-level PubSub subscription manager
+
+**Class: PubSubListener**
+
+**Responsibilities**:
+- Manages Google Cloud PubSub subscription connection
+- Handles authentication via `GOOGLE_APPLICATION_CREDENTIALS`
+- Listens for messages from PubSub subscription
+- Implements retry logic with exponential backoff
+- Verifies subscription exists before starting
+- Manages message flow control (maxMessages)
+
+**Key Methods**:
+- `constructor(config)` - Initializes PubSub client
+- `onMessage(handler)` - Registers message handler
+- `onError(handler)` - Registers error handler
+- `start()` - Starts listening to subscription
+- `stop()` - Stops listening and cleans up
+- `isActive()` - Checks if listener is active
+- `getSubscriptionInfo()` - Returns subscription metadata
+
+**Key Features**:
+- Automatic retry on connection failures
+- Subscription verification with timeout
+- Flow control to limit concurrent messages
+- Graceful error handling
+
+---
+
+#### 10. `lib/server/pubsub-standalone.ts`
+**Role**: High-level PubSub message processor and queue manager
+
+**Responsibilities**:
+- Initializes and manages PubSubListener instance
+- Processes incoming PubSub messages
+- Implements message queue for when no clients are connected
+- Filters messages by user_id
+- Routes messages to Socket.IO clients
+- Tracks message statistics (received, acked, nacked, queued, dropped, broadcasted)
+
+**Key Functions**:
+- `initializeStandalonePubSub()` - Sets up PubSub listener
+- `processMessageQueue()` - Processes queued messages when clients connect
+- `startQueueProcessing()` - Starts periodic queue processing
+- `stopQueueProcessing()` - Stops queue processing
+- `setGlobalIOServerForPubSub(io)` - Registers Socket.IO server
+- `getStandalonePubSubStatus()` - Returns status and statistics
+
+**Message Processing Flow**:
+1. Receives message from PubSubListener
+2. Parses message data (JSON)
+3. Extracts user_id from attributes or data
+4. **Filters**: Skips if no user_id or no matching connected user
+5. Creates payload object
+6. Gets routing configuration
+7. Checks if Socket.IO server is available
+8. If clients connected → Routes immediately
+9. If no clients → Queues message (max 100, max age 30s)
+10. Acknowledges or nacks message based on result
+
+**Queue Management**:
+- Max queue size: 100 messages
+- Max queue age: 30 seconds (stale messages are nacked)
+- Processes queue when clients connect
+- Drops messages if queue is full
+
+**Key Features**:
+- User-based filtering
+- Message queuing for offline clients
+- Automatic stale message cleanup
+- Comprehensive statistics tracking
+
+---
+
+#### 11. `lib/server/pubsub/helpers/message-parser.ts`
+**Role**: Parses PubSub message data
+
+**Function: `parseMessageData(message)`**
+
+**Responsibilities**:
+- Converts PubSub message.data (Buffer) to string
+- Attempts JSON parsing
+- Returns structured object:
+  ```typescript
+  {
+    data: any,        // Parsed JSON or { text: string }
+    isJson: boolean,  // Whether parsing succeeded
+    rawData: string  // Original string
+  }
+  ```
+
+**Key Features**:
+- Handles both JSON and plain text messages
+- Graceful fallback for non-JSON data
+
+---
+
+#### 12. `lib/server/pubsub/helpers/message-router.ts`
+**Role**: Routes messages to specific Socket.IO clients based on user_id
+
+**Key Functions**:
+- `routeMessage(io, payload, config, connections)` - Main routing function
+  - **Primary Logic**: If payload has user_id, only send to matching users
+  - Falls back to routing strategy if no user_id
+  - Returns routing result (clients notified, strategy, target)
+
+- `extractUserIdFromPayload(payload)` - Extracts user_id
+  - Checks: payload.attributes.user_id, payload.data.user_id
+  - Also checks for userId (camelCase) variants
+
+- `getRoutingConfig(message)` - Gets routing config from PubSub message
+  - Extracts routing strategy (broadcast/room/user)
+  - Extracts targetRoom and targetUserId from attributes
+
+- `routeToUser()` - Routes to specific user's sockets
+- `routeToRoom()` - Routes to Socket.IO room
+- `routeBroadcast()` - Broadcasts to all clients (with user_id filtering)
+
+**User Filtering Logic**:
+```typescript
+if (messageUserId) {
+  // Find all sockets for this user
+  const userSockets = connections
+    .filter(conn => conn.userId === messageUserId)
+    .map(conn => conn.socketId);
+  
+  // Send only to those sockets
+  userSockets.forEach(socketId => {
+    io.to(socketId).emit('notification', payload);
+  });
+}
 ```
 
-### Port Already in Use
+**Key Features**:
+- User-based filtering is primary mechanism
+- Supports fallback routing strategies
+- Returns detailed routing results
 
-**Solution:**
-```powershell
-# Use different port
-$env:BASE_URL = "http://localhost:3001"
-npm run test:puppeteer:login:watch
+---
+
+#### 13. `lib/server/socket-handlers.ts`
+**Role**: Socket.IO event handlers for client connections
+
+**Function: `setupSocketHandlers(socket)`**
+
+**Event Handlers**:
+- `connect` - Client connects
+  - Adds connection to connection manager
+  - Triggers queued message processing
+  - Emits 'connected' event
+
+- `authenticate` - Client authenticates
+  - Receives: `{ userId, token }`
+  - Updates userId in connection manager
+  - Emits 'authenticated' confirmation
+
+- `heartbeat` - Client heartbeat
+  - Updates lastHeartbeat timestamp
+  - Emits 'heartbeat-ack'
+
+- `subscribe` / `unsubscribe` - Room management
+  - Joins/leaves Socket.IO rooms
+  - Emits confirmation
+
+- `message` - Client sends message
+  - Broadcasts to all other clients
+  - Emits 'message-sent' confirmation
+
+- `disconnect` - Client disconnects
+  - Removes from connection manager
+
+**Key Features**:
+- Manages connection lifecycle
+- Handles user authentication
+- Processes queued messages on new connections
+
+---
+
+#### 14. `lib/server/connection-manager.ts`
+**Role**: Tracks Socket.IO client connections and user associations
+
+**Data Structure**:
+```typescript
+Map<socketId, ConnectionInfo>
+ConnectionInfo {
+  socketId: string,
+  userId?: string,
+  connectedAt: Date,
+  lastHeartbeat: Date
+}
+```
+
+**Functions**:
+- `addConnection(socketId, userId?)` - Adds new connection
+- `removeConnection(socketId)` - Removes connection
+- `updateUserId(socketId, userId)` - Updates user ID for connection
+- `updateHeartbeat(socketId)` - Updates heartbeat timestamp
+- `getAllConnections()` - Returns all connections
+- `getConnectionCount()` - Returns connection count
+- `clearAllConnections()` - Clears all connections
+
+**Key Features**:
+- In-memory storage (Map)
+- Tracks user associations for filtering
+- Heartbeat tracking for connection health
+
+---
+
+## User Authentication Flow
+
+```
+1. User Logs In
+   │
+   ▼
+2. Auth State Updated (Redux)
+   │
+   ├─► user.uid available
+   ├─► token available
+   └─► isAuthenticated = true
+   │
+   ▼
+3. SocketProvider Detects Auth State
+   │
+   ├─► useEffect triggers when:
+   │   - isConnected = true
+   │   - isAuthenticated = true
+   │   - user.uid exists
+   │
+   ▼
+4. Calls authenticate(user.uid, token)
+   │
+   ├─► useSocketRedux.authenticate()
+   │   └─► socket.emit('authenticate', { userId: user.uid, token })
+   │
+   ▼
+5. Server Receives 'authenticate' Event
+   │
+   ├─► socket-handlers.ts
+   │   └─► updateUserId(socket.id, data.userId)
+   │
+   ▼
+6. Connection Manager Updates
+   │
+   ├─► connection-manager.ts
+   │   └─► connections.set(socketId, { ..., userId: user.uid })
+   │
+   ▼
+7. User ID Now Available for Message Filtering
+   │
+   └─► PubSub messages with matching user_id will be delivered
 ```
 
 ---
 
-## Best Practices
+## Message Deduplication
 
-### 1. Run Tests Before Committing
+The system prevents duplicate notifications through multiple mechanisms:
 
-```bash
-# Quick smoke test before commit
-npm run test:puppeteer:login
-npm run test:puppeteer:analysis
-```
+1. **Redux Store Deduplication** (`notificationsSlice.ts`):
+   - Checks `messageId` before adding
+   - Handles API notifications (api-* prefix) specially
+   - Prevents same notification from appearing twice
 
-### 2. Use Watch Mode for Debugging
+2. **PubSub Message Acknowledgment**:
+   - Messages are acked only after successful delivery
+   - Prevents PubSub from redelivering processed messages
 
-When a test fails, always run with `:watch` to see what's happening:
-```bash
-npm run test:puppeteer:login:watch
-```
-
-### 3. Check Screenshots
-
-After test runs, check the screenshots:
-- **Success screenshots** - Verify UI looks correct
-- **Error screenshots** - See what went wrong
-
-### 4. Keep Credentials Secure
-
-**Never commit credentials to git:**
-```bash
-# Add to .gitignore (if not already)
-echo "*.env" >> .gitignore
-echo ".env.local" >> .gitignore
-```
-
-**Use environment variables:**
-```powershell
-# Set in your shell session (not in code)
-$env:LOGIN_EMAIL = "your-email@example.com"
-```
-
-### 5. Run Tests in Order
-
-Some tests depend on others:
-1. **Login test** - Should always work first
-2. **Analysis test** - Requires login
-3. **Navigation test** - Requires login
-4. **Details test** - Requires login + saved claims data
-
-### 6. Test After Backend Changes
-
-When backend API changes:
-- Run all tests to ensure frontend still works
-- Check for new error messages
-- Verify API request formats
-
-### 7. Update Tests When UI Changes
-
-If you change:
-- Button text → Update test selectors
-- Form field names → Update test selectors
-- Page routes → Update test URLs
-- Component structure → Update test logic
+3. **Message Queue Deduplication**:
+   - Queue checks for existing messages before adding
+   - Prevents queue overflow from duplicates
 
 ---
 
-## Test File Locations
+## Error Handling & Resilience
 
-All test files are in `zoe-frontend/scripts/`:
+### PubSub Connection Failures
+- Automatic retry with exponential backoff
+- Max 10 retry attempts
+- Graceful degradation (logs errors, continues)
 
-```
-scripts/
-├── test-login-page.js              # Login authentication test
-├── test-analysis-page.js           # Analysis form submission test
-├── test-saved-claims-navigation.js # Header navigation test
-├── test-saved-claims-page.js       # Claim details loading test
-└── fixtures/
-    └── medical-record.txt          # Test file for uploads
-```
+### Socket.IO Connection Failures
+- Automatic reconnection (up to 10 attempts)
+- Reconnection delay: 1-5 seconds
+- Connection state tracked in Redux
 
----
+### API Failures
+- Returns empty array on non-critical errors
+- 401 errors throw (triggers auth flow)
+- 500 errors throw (service unavailable)
+- 404 errors return empty (service might not be available)
 
-## Quick Reference
-
-### Run All Tests
-```bash
-npm run test:puppeteer:login:watch
-npm run test:puppeteer:analysis:watch
-npm run test:puppeteer:saved-claims-nav:watch
-npm run test:puppeteer:saved-claims:watch
-```
-
-### Check Test Results
-```bash
-# List screenshots
-ls *.png
-
-# View latest screenshot (PowerShell)
-Start-Process login-page-smoke.png
-```
-
-### Common Commands
-```bash
-# Run test with custom server
-BASE_URL=http://localhost:3001 npm run test:puppeteer:login:watch
-
-# Run test with custom credentials
-LOGIN_EMAIL=test@example.com LOGIN_PASSWORD=pass123 npm run test:puppeteer:login:watch
-
-# Run headless (faster, no browser window)
-npm run test:puppeteer:login
-```
+### Message Processing Failures
+- Failed messages are nacked (redelivered by PubSub)
+- Queue prevents message loss when clients disconnect
+- Stale messages (30s+) are nacked to allow redelivery
 
 ---
 
-## What Each Test Validates
+## Performance Optimizations
 
-### Login Test Validates:
-- ✅ Login page renders
-- ✅ Form submission works
-- ✅ Authentication API integration
-- ✅ Redirect after login
-- ✅ Session management
-
-### Analysis Form Test Validates:
-- ✅ Form fields are accessible
-- ✅ File upload functionality
-- ✅ Form validation
-- ✅ API request submission
-- ✅ Button interactions
-
-### Saved Claims Navigation Test Validates:
-- ✅ Header component renders
-- ✅ Navigation links work
-- ✅ Routing configuration
-- ✅ Page transitions
-
-### Saved Claims Details Test Validates:
-- ✅ Claims list loading
-- ✅ Claim card interactions
-- ✅ Details API integration
-- ✅ UI state management
-- ✅ Empty state handling
+1. **Message Queue**: Prevents message loss when clients disconnect
+2. **Connection Tracking**: Efficient Map-based storage
+3. **Redux Deduplication**: Prevents duplicate renders
+4. **Lazy Loading**: API notifications load only when needed
+5. **Batch Processing**: Queue processes multiple messages at once
+6. **Flow Control**: PubSub limits concurrent messages (maxMessages: 10)
 
 ---
 
-## Integration with CI/CD
+## Security Considerations
 
-These tests can be integrated into your CI/CD pipeline:
-
-```yaml
-# Example GitHub Actions
-- name: Run Puppeteer Tests
-  run: |
-    npm run dev &
-    sleep 10
-    npm run test:puppeteer:login
-    npm run test:puppeteer:analysis
-```
-
-**Note:** CI environments typically run headless by default.
+1. **User-Based Filtering**: Only matching users receive notifications
+2. **Bearer Token Authentication**: API calls require valid token
+3. **Socket Authentication**: User ID must be authenticated before receiving messages
+4. **Connection Validation**: Server validates user associations
 
 ---
 
-## Getting Help
+## Configuration
 
-If tests fail:
+### Environment Variables
 
-1. **Check error screenshot** - See what the page looks like
-2. **Run with `:watch`** - Watch the browser to see what happens
-3. **Verify dev server** - Make sure it's running and accessible
-4. **Check credentials** - Verify LOGIN_EMAIL and LOGIN_PASSWORD are set
-5. **Review console output** - Look for specific error messages
+**Client-Side**:
+- `NEXT_PUBLIC_NOTIFICATIONS_API_URL` - API endpoint URL
+- `NEXT_PUBLIC_SOCKET_IO_PATH` - Socket.IO path (default: '/api/socket.io')
+
+**Server-Side**:
+- `GCP_PROJECT_ID` - Google Cloud Project ID
+- `PUBSUB_SUBSCRIPTION` - PubSub subscription name
+- `PUBSUB_TOPIC` - PubSub topic name
+- `GOOGLE_APPLICATION_CREDENTIALS` - Path to GCP credentials JSON
 
 ---
 
 ## Summary
 
-These Puppeteer tests provide:
-- **Automated verification** of critical user flows
-- **Visual documentation** via screenshots
-- **Regression detection** before deployment
-- **Quick feedback** during development
+The notifications system provides:
+- ✅ **Historical Data**: REST API loads saved notifications
+- ✅ **Real-time Updates**: PubSub delivers live notifications
+- ✅ **User Filtering**: Only matching users receive notifications
+- ✅ **Resilience**: Queue system, retry logic, error handling
+- ✅ **Deduplication**: Prevents duplicate notifications
+- ✅ **Performance**: Efficient state management and routing
 
-Run them regularly to ensure your application works as expected!
-
----
-
-**Last Updated:** Based on current test suite in `zoe-frontend/scripts/`
+Both systems work together seamlessly, with API notifications providing context and PubSub notifications delivering real-time updates.
 
