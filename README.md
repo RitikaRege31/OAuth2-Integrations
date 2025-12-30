@@ -1,815 +1,822 @@
-# Notifications System Architecture & Data Flow
+# Notifications Flow - Error Handling and Edge Cases Documentation
 
 ## Overview
 
-The ARIA application uses a **dual notification system** that combines:
-1. **REST API Notifications** - Historical/persisted notifications fetched from a backend API
-2. **PubSub Real-time Notifications** - Live notifications delivered via Google Cloud PubSub and Socket.IO
-
-Both systems work together to provide a complete notification experience with real-time updates and historical data.
+This document provides a comprehensive overview of all error types and edge cases carefully handled throughout the notifications flow, including WebSocket connections, PubSub message processing, API interactions, and state management.
 
 ---
 
-## System Architecture Diagram
+## 1. WebSocket Connection Errors
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    NOTIFICATION SOURCES                         │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  1. REST API                   2. Google Cloud PubSub          │
-│     (Historical)                  (Real-time)                   │
-│         │                              │                        │
-│         │                              │                        │
-│         ▼                              ▼                        │
-│  ┌─────────────┐              ┌──────────────────┐            │
-│  │ Backend API │              │ PubSub Topic     │            │
-│  │  Endpoint   │              │ (GCP)             │            │
-│  └─────────────┘              └──────────────────┘            │
-│         │                              │                        │
-│         │                              │                        │
-└─────────┼──────────────────────────────┼────────────────────────┘
-          │                              │
-          │                              │
-          ▼                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    FRONTEND LAYER                              │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │  NotificationPanel Component                            │  │
-│  │  - Displays notifications                                │  │
-│  │  - Handles user interactions                             │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│                           ▲                                     │
-│                           │                                     │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │  Redux Store (notificationsSlice)                        │  │
-│  │  - Centralized state management                          │  │
-│  │  - Deduplication logic                                   │  │
-│  │  - Read/unread tracking                                  │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│         ▲                              ▲                         │
-│         │                              │                         │
-│         │                              │                         │
-│  ┌──────────────┐              ┌──────────────┐               │
-│  │ useNotifications│            │ useSocketRedux│               │
-│  │ Hook           │            │ Hook         │               │
-│  └──────────────┘              └──────────────┘               │
-│         │                              │                         │
-│         │                              │                         │
-│  ┌──────────────┐              ┌──────────────┐               │
-│  │ notificationsApi│           │ Socket.IO    │               │
-│  │ Service       │             │ Client        │               │
-│  └──────────────┘              └──────────────┘               │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-          │                              │
-          │                              │
-          ▼                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    SERVER LAYER                                │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │  Next.js API Routes                                      │  │
-│  │  - /api/health                                           │  │
-│  │  - /api/pubsub/status                                    │  │
-│  │  - /api/socket.io (Socket.IO endpoint)                   │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│                           ▲                                     │
-│                           │                                     │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │  Socket.IO Server                                        │  │
-│  │  - Manages WebSocket connections                         │  │
-│  │  - Handles client authentication                         │  │
-│  │  - Broadcasts notifications                              │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│         ▲                              ▲                         │
-│         │                              │                         │
-│  ┌──────────────┐              ┌──────────────┐               │
-│  │ socket-handlers│           │ pubsub-      │               │
-│  │               │            │ standalone   │               │
-│  └──────────────┘              └──────────────┘               │
-│         │                              │                         │
-│         │                              │                         │
-│  ┌──────────────┐              ┌──────────────┐               │
-│  │ connection-  │              │ pubsub-      │               │
-│  │ manager      │              │ listener     │               │
-│  └──────────────┘              └──────────────┘               │
-│                                 │                               │
-│                                 ▼                               │
-│                        ┌──────────────┐                        │
-│                        │ message-     │                        │
-│                        │ router       │                        │
-│                        └──────────────┘                        │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+### 1.1 Connection Failures
 
----
+**Error Type**: `SOCKET_CONNECTION_FAILED`
 
-## End-to-End Data Flow
+**Handled Scenarios**:
+- Initial connection attempt fails due to network issues
+- Server is unavailable or unreachable
+- Connection timeout during handshake (20 seconds)
+- DNS resolution failures
+- Firewall or proxy blocking WebSocket connections
 
-### Flow 1: REST API Notifications (Historical Data)
+**Recovery Strategy**: Automatic retry with exponential backoff
+- Reconnection attempts: Up to 10 attempts
+- Initial delay: 1 second
+- Maximum delay: 5 seconds between attempts
+- Recovery action: RETRY
 
-**Purpose**: Load previously saved notifications when the user first opens the app.
+**Edge Cases**:
+- Connection fails immediately after page load
+- Connection drops during active session
+- Multiple rapid connection attempts prevented by connection state checks
 
-```
-1. User Opens App
-   │
-   ▼
-2. NotificationPanel Component Mounts
-   │
-   ▼
-3. useNotificationsInitialLoad Hook Executes
-   │
-   ▼
-4. fetchNotifications() Called (notificationsApi.ts)
-   │
-   ├─► GET /api/v1/notification/recent?limit=15
-   │   │
-   │   ├─► Headers: Authorization: Bearer <token>
-   │   │
-   │   └─► Response: { success: true, notifications: [...] }
-   │
-   ▼
-5. parseNotificationsResponse() Transforms Data
-   │
-   ├─► Maps API format to internal Notification format
-   │   - Adds 'api-' prefix to messageId
-   │   - Extracts user_id, priority, task_id, etc.
-   │   - Sets source: 'api'
-   │
-   ▼
-6. Redux Action: loadNotifications()
-   │
-   ├─► Stores in notificationsSlice
-   │   - Sets isInitialLoadComplete = true
-   │   - Sorts by timestamp (newest first)
-   │   - Preserves read status if notification already exists
-   │
-   ▼
-7. NotificationPanel Renders Notifications
-   │
-   └─► User sees historical notifications
-```
+### 1.2 Disconnection Events
 
-**Key Points**:
-- Runs once on initial page load
-- Fetches up to 15 most recent notifications
-- Uses bearer token for authentication
-- Sets `isInitialLoadComplete` flag to allow PubSub messages
+**Error Type**: `SOCKET_DISCONNECTED`
+
+**Handled Scenarios**:
+- Unexpected disconnection from server
+- Network interruption (WiFi drop, mobile network switch)
+- Server-side connection termination
+- Client-side navigation causing connection loss
+
+**Recovery Strategy**: Automatic reconnection with state preservation
+- Heartbeat mechanism stops immediately
+- Connection state updated in Redux store
+- Automatic reconnection initiated
+- Recovery action: RETRY
+
+**Edge Cases**:
+- Disconnection during message transmission
+- Multiple disconnection events in rapid succession
+- Disconnection while processing queued notifications
+
+### 1.3 Reconnection Failures
+
+**Error Type**: `SOCKET_RECONNECT_FAILED`
+
+**Handled Scenarios**:
+- All reconnection attempts exhausted (10 attempts)
+- Persistent network issues preventing reconnection
+- Server permanently unavailable
+- Authentication failures during reconnection
+
+**Recovery Strategy**: 
+- Maximum retry attempts: 10
+- Recovery action: RETRY
+- Error logged with severity: HIGH
+- User notified of connection issues
+
+**Edge Cases**:
+- Intermittent connectivity causing repeated failures
+- Reconnection succeeds but immediately fails again
+- Partial reconnection (connected but not authenticated)
+
+### 1.4 Emit Failures
+
+**Error Type**: `SOCKET_EMIT_FAILED`
+
+**Handled Scenarios**:
+- Attempting to emit message when socket is disconnected
+- Message payload too large
+- Socket.IO internal errors during emission
+- Network issues during message transmission
+
+**Recovery Strategy**: Message queuing for later transmission
+- Recovery action: QUEUE
+- Messages stored for retry when connection restored
+- Error severity: MEDIUM
+
+**Edge Cases**:
+- Emit fails for critical messages (notifications)
+- Multiple emit failures in sequence
+- Emit succeeds but message not received by server
+
+### 1.5 User Not Found
+
+**Error Type**: `SOCKET_USER_NOT_FOUND`
+
+**Handled Scenarios**:
+- Routing notification to user ID that has no active connections
+- User logged out but notification still being routed
+- Invalid or non-existent user ID in message
+
+**Recovery Strategy**: Skip message processing
+- Recovery action: SKIP
+- Error severity: LOW
+- Message acknowledged to prevent redelivery
+
+**Edge Cases**:
+- User disconnects between message receipt and routing
+- Multiple notifications for same non-existent user
+- User ID format mismatch
 
 ---
 
-### Flow 2: PubSub Real-time Notifications
+## 2. PubSub Connection and Subscription Errors
 
-**Purpose**: Deliver live notifications as they are published to the PubSub topic.
+### 2.1 PubSub Connection Failures
 
-```
-1. External System Publishes to PubSub Topic
-   │
-   ├─► Message Structure:
-   │   {
-   │     "data": { "message": "...", "user_id": "abc123", ... },
-   │     "attributes": { "user_id": "abc123", "routing": "user" }
-   │   }
-   │
-   ▼
-2. PubSub Subscription Receives Message
-   │
-   ▼
-3. pubsub-listener.ts (PubSubListener Class)
-   │
-   ├─► Listens to Google Cloud PubSub subscription
-   │   - Configurable maxMessages (default: 10)
-   │   - Automatic retry with exponential backoff
-   │   - Handles connection errors gracefully
-   │
-   ├─► Emits 'message' event with PubSub Message object
-   │
-   ▼
-4. pubsub-standalone.ts (Message Handler)
-   │
-   ├─► Receives message from PubSubListener
-   │
-   ├─► parseMessageData() - Parses JSON from message.data
-   │
-   ├─► Extracts user_id from:
-   │   - message.attributes.user_id
-   │   - parsedMessage.data.user_id
-   │
-   ├─► User Filtering Logic:
-   │   ├─► If no user_id → Skip message (ack & return)
-   │   ├─► Check if any connected user matches user_id
-   │   └─► If no matching user → Skip message (ack & return)
-   │
-   ├─► Creates payload:
-   │   {
-   │     messageId: message.id,
-   │     publishTime: message.publishTime,
-   │     attributes: message.attributes,
-   │     data: parsedMessage.data,
-   │     timestamp: new Date().toISOString(),
-   │     source: 'pubsub'
-   │   }
-   │
-   ├─► Gets routing config from message attributes
-   │
-   ├─► Checks Socket.IO Server Availability:
-   │   ├─► If no clients connected → Queue message
-   │   └─► If clients available → Route immediately
-   │
-   ▼
-5. message-router.ts (Routing Logic)
-   │
-   ├─► extractUserIdFromPayload() - Gets user_id from payload
-   │
-   ├─► If user_id exists:
-   │   ├─► Find all Socket.IO connections with matching userId
-   │   ├─► Emit 'notification' event to those sockets only
-   │   └─► Return routing result
-   │
-   ├─► If no user_id (fallback):
-   │   └─► Use routing strategy (broadcast/room/user)
-   │
-   ▼
-6. Socket.IO Server Broadcasts
-   │
-   ├─► io.to(socketId).emit('notification', payload)
-   │   - Only sends to sockets with matching userId
-   │
-   ▼
-7. Client Receives via Socket.IO
-   │
-   ├─► useSocketRedux Hook Listens for 'notification' event
-   │
-   ├─► handleNotification() Handler:
-   │   ├─► Transforms payload to Notification format
-   │   ├─► Dispatches addNotification() Redux action
-   │   └─► Calls optional onNotification callback
-   │
-   ▼
-8. Redux Store Updates
-   │
-   ├─► notificationsSlice.addNotification() Reducer:
-   │   ├─► Checks for duplicates by messageId
-   │   ├─► Adds to notifications array (unshift - newest first)
-   │   ├─► Updates unreadCount
-   │   └─► Sets lastNotification
-   │
-   ▼
-9. NotificationPanel Re-renders
-   │
-   └─► User sees new notification in real-time
-```
+**Error Type**: `PUBSUB_CONNECTION_FAILED`
 
-**Key Points**:
-- Real-time delivery via WebSocket
-- User-based filtering ensures only matching users receive notifications
-- Queue system handles messages when no clients are connected
-- Automatic deduplication in Redux store
+**Handled Scenarios**:
+- Google Cloud PubSub service unavailable
+- Network connectivity issues to GCP
+- Authentication/authorization failures
+- PubSub client initialization errors
+- Subscription listener startup failures
+
+**Recovery Strategy**: Retry with exponential backoff
+- Maximum retry attempts: 10
+- Recovery action: RETRY
+- Error severity: CRITICAL
+- Automatic retry scheduling enabled
+
+**Edge Cases**:
+- Connection fails during application startup
+- Intermittent GCP service outages
+- Credential expiration during runtime
+- Rate limiting from GCP
+
+### 2.2 Missing Subscription
+
+**Error Type**: `PUBSUB_SUBSCRIPTION_MISSING`
+
+**Handled Scenarios**:
+- Subscription does not exist in Google Cloud Console
+- Subscription deleted or renamed
+- Incorrect subscription name in configuration
+- Subscription not accessible due to permissions
+
+**Recovery Strategy**: Abort operation (non-recoverable)
+- Recovery action: ABORT
+- Error severity: CRITICAL
+- Application cannot proceed without subscription
+- Clear error message provided for configuration fix
+
+**Edge Cases**:
+- Subscription exists but not accessible
+- Subscription name typo in environment variables
+- Subscription in different project/region
 
 ---
 
-## Detailed File Roles
+## 3. PubSub Message Processing Errors
 
-### Client-Side Files
+### 3.1 Message Parse Failures
 
-#### 1. `components/NotificationPanel.tsx`
-**Role**: UI component that displays notifications to the user
+**Error Type**: `PUBSUB_MESSAGE_PARSE_FAILED`
 
-**Responsibilities**:
-- Renders notification bell icon with unread count badge
-- Shows dropdown panel with list of notifications
-- Handles user interactions (mark as read, dismiss, mark all read)
-- Formats timestamps (e.g., "5m ago", "2h ago")
-- Categorizes notifications by type (pubsub, batch, ingestion, system)
-- Sorts notifications (unread first, then by timestamp)
-- Calls `useNotificationsInitialLoad()` to fetch API notifications on mount
+**Handled Scenarios**:
+- Invalid JSON format in message payload
+- Malformed message structure
+- Encoding issues (non-UTF-8 content)
+- Corrupted message data
+- Missing required fields in message
 
-**Key Features**:
-- Click outside to close
-- Visual indicators for unread notifications
-- Empty state when no notifications
-- Responsive design
+**Recovery Strategy**: Skip malformed message
+- Recovery action: SKIP
+- Error severity: MEDIUM
+- Message nacked to prevent reprocessing
+- Error logged with message ID for debugging
 
----
+**Edge Cases**:
+- Partial JSON causing parse errors
+- Messages with unexpected data types
+- Empty or null message payloads
+- Messages exceeding size limits
 
-#### 2. `hooks/useNotifications.ts`
-**Role**: React hook for fetching notifications from REST API
+### 3.2 Missing User ID
 
-**Responsibilities**:
-- `useNotifications()` - General hook for fetching notifications
-  - Supports fetch on mount, merge mode, custom token
-  - Prevents concurrent fetches
-  - Only fetches when user is authenticated
+**Error Type**: `PUBSUB_MESSAGE_MISSING_USER_ID`
 
-- `useNotificationsInitialLoad()` - Specialized hook for initial load
-  - Fetches once on mount
-  - Sets `isInitialLoadComplete` flag in Redux
-  - Ensures API notifications load before PubSub messages
+**Handled Scenarios**:
+- Message attributes missing user_id field
+- Message data missing user identifier
+- User ID in unexpected location (nested objects)
+- Multiple user ID fields with none matching expected format
 
-**Key Features**:
-- Prevents duplicate fetches
-- Handles authentication state
-- Supports both replace and merge modes
+**Recovery Strategy**: Skip message (cannot route without user)
+- Recovery action: SKIP
+- Error severity: LOW
+- Message acknowledged to prevent redelivery
+- Multiple user ID field locations checked before skipping
 
----
+**Edge Cases**:
+- User ID present but in wrong format
+- User ID in nested attributes object
+- Multiple potential user ID fields with conflicts
 
-#### 3. `hooks/useSocketRedux.ts`
-**Role**: React hook that manages Socket.IO client connection and events
+### 3.3 Routing Failures
 
-**Responsibilities**:
-- Creates and manages Socket.IO client instance
-- Registers event listeners:
-  - `connect` / `disconnect` - Connection state
-  - `notification` - Receives PubSub notifications
-  - `message` - Receives general messages
-  - `authenticated` - Confirms authentication
-  - `subscribed` / `unsubscribed` - Room subscriptions
-- Transforms incoming notification payloads to Redux format
-- Dispatches Redux actions for notifications and messages
-- Provides helper functions:
-  - `authenticate(userId, token)` - Authenticate socket connection
-  - `subscribe(room)` / `unsubscribe(room)` - Room management
-  - `sendMessage(data)` - Send messages to server
+**Error Type**: `PUBSUB_MESSAGE_ROUTING_FAILED`
 
-**Key Features**:
-- Auto-connects by default
-- Handles reconnection logic
-- Updates Redux state for connection status
+**Handled Scenarios**:
+- Unable to determine routing strategy
+- Target room does not exist
+- Target user has no active connections
+- Socket.IO emit fails during routing
+- Connection manager errors
 
----
+**Recovery Strategy**: Queue message for later processing
+- Recovery action: QUEUE
+- Error severity: MEDIUM
+- Message queued with timestamp
+- Retry when connections available
 
-#### 4. `components/providers/SocketProvider.tsx`
-**Role**: React provider that initializes Socket.IO and authenticates connections
+**Edge Cases**:
+- Routing succeeds but message not delivered
+- Partial routing (some sockets receive, others don't)
+- Routing configuration conflicts
 
-**Responsibilities**:
-- Wraps app with Socket.IO initialization
-- Calls `/api/health` and `/api/pubsub/status` on mount to ensure server is ready
-- Automatically authenticates Socket.IO connection when:
-  - Socket is connected
-  - User is authenticated
-  - User ID is available
-- Uses `useSocketRedux` hook internally
+### 3.4 Message Queue Overflow
 
-**Key Features**:
-- Automatic authentication on login
-- Server health checks
-- Retry logic for server initialization
+**Error Type**: `PUBSUB_MESSAGE_QUEUE_OVERFLOW`
 
----
+**Handled Scenarios**:
+- Message queue exceeds maximum capacity
+- Too many messages queued due to connection issues
+- Queue processing slower than message arrival rate
+- Backlog of messages waiting for connection
 
-#### 5. `lib/services/notificationsApi.ts`
-**Role**: Service layer for REST API notification endpoints
+**Recovery Strategy**: Skip oldest messages
+- Recovery action: SKIP
+- Error severity: HIGH
+- Oldest messages removed from queue
+- Prevents memory exhaustion
 
-**Responsibilities**:
-- `fetchNotifications(token?, limit)` - Fetches notifications from API
-  - Validates and clamps limit (1-100)
-  - Handles authentication via bearer token
-  - Error handling (401, 400, 404, 500)
-  - Returns empty array on non-critical errors
+**Edge Cases**:
+- Queue fills up rapidly during connection outage
+- Queue processing stops but messages keep arriving
+- Queue size limits reached during high traffic
 
-- `parseNotificationsResponse()` - Transforms API response
-  - Maps API format to internal Notification format
-  - Adds `api-` prefix to messageId
-  - Extracts user_id, priority, task_id to attributes
-  - Sets source: 'api'
+### 3.5 Stale Messages
 
-- `getNotificationsApiEndpoint()` - Returns API endpoint URL
-  - Uses `NEXT_PUBLIC_NOTIFICATIONS_API_URL` env var
-  - Defaults to `/api/v1/notification/recent`
+**Error Type**: `PUBSUB_MESSAGE_STALE`
 
-**Key Features**:
-- Graceful error handling
-- Token support for server-side calls
-- Type-safe response parsing
+**Handled Scenarios**:
+- Messages queued longer than maximum age threshold
+- Messages older than acceptable processing window
+- Time-sensitive messages that are no longer relevant
 
----
+**Recovery Strategy**: Nack and remove stale messages
+- Recovery action: SKIP
+- Error severity: MEDIUM
+- Stale messages identified and nacked
+- Prevents processing outdated information
 
-#### 6. `lib/store/slices/notificationsSlice.ts`
-**Role**: Redux slice for notification state management
+**Edge Cases**:
+- Messages become stale during queue processing
+- Stale message detection during high load
+- Messages with time-sensitive data
 
-**State Structure**:
-```typescript
-{
-  notifications: Notification[],
-  unreadCount: number,
-  lastNotification: Notification | null,
-  isInitialLoadComplete: boolean
-}
-```
+### 3.6 Acknowledgment Failures
 
-**Reducers**:
-- `addNotification` - Adds new notification (from PubSub or API)
-  - Checks for duplicates by messageId
-  - Handles API notifications (api-* prefix)
-  - Increments unreadCount
-  - Adds to beginning of array (newest first)
+**Error Type**: `PUBSUB_MESSAGE_ACK_FAILED`
 
-- `loadNotifications` - Replaces all notifications (initial API load)
-  - Preserves read status for existing notifications
-  - Sorts by timestamp
-  - Sets isInitialLoadComplete = true
+**Handled Scenarios**:
+- Failed to acknowledge successfully processed message
+- PubSub service unavailable during ack
+- Network issues during acknowledgment
+- Message already acknowledged or expired
 
-- `mergeNotifications` - Merges API notifications with existing
-  - Avoids duplicates
-  - Only adds new notifications
+**Recovery Strategy**: Retry acknowledgment
+- Recovery action: RETRY
+- Error severity: MEDIUM
+- Maximum retries: 3
+- Prevents message redelivery
 
-- `markNotificationAsRead` - Marks single notification as read
-- `markAllNotificationsAsRead` - Marks all as read
-- `removeNotification` - Removes notification from list
-- `clearNotifications` - Clears all notifications
-- `setInitialLoadComplete` - Sets initial load flag
+**Edge Cases**:
+- Ack fails after successful processing
+- Multiple ack attempts for same message
+- Ack timeout issues
 
-**Key Features**:
-- Automatic deduplication
-- Read/unread tracking
-- Timestamp-based sorting
-- Handles both API and PubSub sources
+### 3.7 Negative Acknowledgment Failures
+
+**Error Type**: `PUBSUB_MESSAGE_NACK_FAILED`
+
+**Handled Scenarios**:
+- Failed to nack message that should be redelivered
+- PubSub service unavailable during nack
+- Network issues during negative acknowledgment
+- Message already processed or expired
+
+**Recovery Strategy**: Retry nack operation
+- Recovery action: RETRY
+- Error severity: MEDIUM
+- Maximum retries: 3
+- Ensures message redelivery when appropriate
+
+**Edge Cases**:
+- Nack fails for stale messages
+- Nack fails during error handling
+- Multiple nack attempts for same message
 
 ---
 
-### Server-Side Files
+## 4. API and Service Errors
 
-#### 7. `lib/server/startup.ts`
-**Role**: Server initialization module
+### 4.1 API Fetch Failures
 
-**Responsibilities**:
-- Auto-initializes PubSub listener on server startup
-- Calls `initializeStandalonePubSub()` when module loads
-- Ensures PubSub starts listening as soon as server is ready
-- Prevents duplicate initialization
+**Error Type**: `API_FETCH_FAILED`
 
-**Key Features**:
-- Runs only on server-side (checks `typeof window === 'undefined'`)
-- One-time initialization with promise caching
+**Handled Scenarios**:
+- HTTP request to notifications API fails
+- Network timeout during API call
+- CORS errors preventing API access
+- Invalid API endpoint configuration
+- Request payload errors
 
----
+**Recovery Strategy**: Retry with backoff
+- Recovery action: RETRY
+- Error severity: MEDIUM
+- Maximum retries: 3
+- Prevents concurrent fetch attempts
 
-#### 8. `lib/server/pubsub-config/pubsub-config.ts`
-**Role**: Configuration for Google Cloud PubSub
+**Edge Cases**:
+- API fails during initial load
+- Partial API response (connection drops mid-request)
+- API returns error status codes
 
-**Responsibilities**:
-- Provides PubSub configuration from environment variables
-- Returns:
-  - `projectId` - GCP project ID
-  - `subscriptionName` - PubSub subscription name
-  - `topicName` - PubSub topic name
+### 4.2 Authentication Required
 
-**Environment Variables**:
-- `GCP_PROJECT_ID` (default: 'gabeo-poc')
-- `PUBSUB_SUBSCRIPTION` (default: full subscription path)
-- `PUBSUB_TOPIC` (default: full topic path)
+**Error Type**: `API_AUTH_REQUIRED`
 
----
+**Handled Scenarios**:
+- Missing or invalid authentication token
+- Token expired during API call
+- Unauthorized access to notifications endpoint
+- Session expired
 
-#### 9. `lib/server/pubsub-listener.ts`
-**Role**: Low-level PubSub subscription manager
+**Recovery Strategy**: Abort and require re-authentication
+- Recovery action: ABORT
+- Error severity: HIGH
+- User must re-authenticate
+- Prevents unauthorized data access
 
-**Class: PubSubListener**
+**Edge Cases**:
+- Token expires during long-running request
+- Invalid token format
+- Token missing from request headers
 
-**Responsibilities**:
-- Manages Google Cloud PubSub subscription connection
-- Handles authentication via `GOOGLE_APPLICATION_CREDENTIALS`
-- Listens for messages from PubSub subscription
-- Implements retry logic with exponential backoff
-- Verifies subscription exists before starting
-- Manages message flow control (maxMessages)
+### 4.3 Service Unavailable
 
-**Key Methods**:
-- `constructor(config)` - Initializes PubSub client
-- `onMessage(handler)` - Registers message handler
-- `onError(handler)` - Registers error handler
-- `start()` - Starts listening to subscription
-- `stop()` - Stops listening and cleans up
-- `isActive()` - Checks if listener is active
-- `getSubscriptionInfo()` - Returns subscription metadata
+**Error Type**: `API_SERVICE_UNAVAILABLE`
 
-**Key Features**:
-- Automatic retry on connection failures
-- Subscription verification with timeout
-- Flow control to limit concurrent messages
-- Graceful error handling
+**Handled Scenarios**:
+- Backend API service down or unreachable
+- 503 Service Unavailable HTTP status
+- API rate limiting exceeded
+- Maintenance mode on backend
 
----
+**Recovery Strategy**: Retry with exponential backoff
+- Recovery action: RETRY
+- Error severity: HIGH
+- Maximum retries: 5
+- Longer delays between retries
 
-#### 10. `lib/server/pubsub-standalone.ts`
-**Role**: High-level PubSub message processor and queue manager
+**Edge Cases**:
+- Service becomes unavailable during request
+- Intermittent service availability
+- Service overload causing timeouts
 
-**Responsibilities**:
-- Initializes and manages PubSubListener instance
-- Processes incoming PubSub messages
-- Implements message queue for when no clients are connected
-- Filters messages by user_id
-- Routes messages to Socket.IO clients
-- Tracks message statistics (received, acked, nacked, queued, dropped, broadcasted)
+### 4.4 Invalid API Response
 
-**Key Functions**:
-- `initializeStandalonePubSub()` - Sets up PubSub listener
-- `processMessageQueue()` - Processes queued messages when clients connect
-- `startQueueProcessing()` - Starts periodic queue processing
-- `stopQueueProcessing()` - Stops queue processing
-- `setGlobalIOServerForPubSub(io)` - Registers Socket.IO server
-- `getStandalonePubSubStatus()` - Returns status and statistics
+**Error Type**: `API_INVALID_RESPONSE`
 
-**Message Processing Flow**:
-1. Receives message from PubSubListener
-2. Parses message data (JSON)
-3. Extracts user_id from attributes or data
-4. **Filters**: Skips if no user_id or no matching connected user
-5. Creates payload object
-6. Gets routing configuration
-7. Checks if Socket.IO server is available
-8. If clients connected → Routes immediately
-9. If no clients → Queues message (max 100, max age 30s)
-10. Acknowledges or nacks message based on result
+**Handled Scenarios**:
+- API returns unexpected response format
+- Missing required fields in response
+- Invalid JSON in response body
+- Response structure mismatch
 
-**Queue Management**:
-- Max queue size: 100 messages
-- Max queue age: 30 seconds (stale messages are nacked)
-- Processes queue when clients connect
-- Drops messages if queue is full
+**Recovery Strategy**: Fallback to empty state
+- Recovery action: FALLBACK
+- Error severity: MEDIUM
+- Use cached or empty notifications
+- Prevents application crash
 
-**Key Features**:
-- User-based filtering
-- Message queuing for offline clients
-- Automatic stale message cleanup
-- Comprehensive statistics tracking
+**Edge Cases**:
+- Partial response data
+- Response with wrong content type
+- Response structure changes breaking compatibility
 
----
+### 4.5 Network Errors
 
-#### 11. `lib/server/pubsub/helpers/message-parser.ts`
-**Role**: Parses PubSub message data
+**Error Type**: `API_NETWORK_ERROR`
 
-**Function: `parseMessageData(message)`**
+**Handled Scenarios**:
+- Network connectivity lost during request
+- DNS resolution failures
+- Request timeout
+- Connection reset by peer
 
-**Responsibilities**:
-- Converts PubSub message.data (Buffer) to string
-- Attempts JSON parsing
-- Returns structured object:
-  ```typescript
-  {
-    data: any,        // Parsed JSON or { text: string }
-    isJson: boolean,  // Whether parsing succeeded
-    rawData: string  // Original string
-  }
-  ```
+**Recovery Strategy**: Retry when network available
+- Recovery action: RETRY
+- Error severity: MEDIUM
+- Maximum retries: 3
+- Network state monitoring
 
-**Key Features**:
-- Handles both JSON and plain text messages
-- Graceful fallback for non-JSON data
+**Edge Cases**:
+- Network drops mid-request
+- Slow network causing timeouts
+- Network switches (WiFi to mobile)
 
 ---
 
-#### 12. `lib/server/pubsub/helpers/message-router.ts`
-**Role**: Routes messages to specific Socket.IO clients based on user_id
+## 5. Notification State and Processing Errors
 
-**Key Functions**:
-- `routeMessage(io, payload, config, connections)` - Main routing function
-  - **Primary Logic**: If payload has user_id, only send to matching users
-  - Falls back to routing strategy if no user_id
-  - Returns routing result (clients notified, strategy, target)
+### 5.1 Duplicate Notifications
 
-- `extractUserIdFromPayload(payload)` - Extracts user_id
-  - Checks: payload.attributes.user_id, payload.data.user_id
-  - Also checks for userId (camelCase) variants
+**Error Type**: `NOTIFICATION_DUPLICATE`
 
-- `getRoutingConfig(message)` - Gets routing config from PubSub message
-  - Extracts routing strategy (broadcast/room/user)
-  - Extracts targetRoom and targetUserId from attributes
+**Handled Scenarios**:
+- Same message received multiple times via PubSub
+- API returns notifications already in store
+- WebSocket and API delivering same notification
+- Message ID collision
 
-- `routeToUser()` - Routes to specific user's sockets
-- `routeToRoom()` - Routes to Socket.IO room
-- `routeBroadcast()` - Broadcasts to all clients (with user_id filtering)
+**Recovery Strategy**: Skip duplicate
+- Recovery action: SKIP
+- Error severity: LOW
+- Duplicate detection by messageId
+- Prevents duplicate UI notifications
 
-**User Filtering Logic**:
-```typescript
-if (messageUserId) {
-  // Find all sockets for this user
-  const userSockets = connections
-    .filter(conn => conn.userId === messageUserId)
-    .map(conn => conn.socketId);
-  
-  // Send only to those sockets
-  userSockets.forEach(socketId => {
-    io.to(socketId).emit('notification', payload);
-  });
-}
-```
+**Edge Cases**:
+- Duplicates with slightly different messageIds
+- Duplicates from different sources (API + PubSub)
+- Duplicates with same content but different IDs
 
-**Key Features**:
-- User-based filtering is primary mechanism
-- Supports fallback routing strategies
-- Returns detailed routing results
+### 5.2 Missing Notification Data
 
----
+**Error Type**: `NOTIFICATION_MISSING_DATA`
 
-#### 13. `lib/server/socket-handlers.ts`
-**Role**: Socket.IO event handlers for client connections
+**Handled Scenarios**:
+- Notification received with null or undefined data
+- Missing required fields (messageId, data)
+- Empty notification payload
+- Malformed notification structure
 
-**Function: `setupSocketHandlers(socket)`**
+**Recovery Strategy**: Skip notification
+- Recovery action: SKIP
+- Error severity: MEDIUM
+- Notification not added to store
+- Error logged for debugging
 
-**Event Handlers**:
-- `connect` - Client connects
-  - Adds connection to connection manager
-  - Triggers queued message processing
-  - Emits 'connected' event
+**Edge Cases**:
+- Notification with partial data
+- Notification with data in unexpected format
+- Notification missing critical fields
 
-- `authenticate` - Client authenticates
-  - Receives: `{ userId, token }`
-  - Updates userId in connection manager
-  - Emits 'authenticated' confirmation
+### 5.3 Display Failures
 
-- `heartbeat` - Client heartbeat
-  - Updates lastHeartbeat timestamp
-  - Emits 'heartbeat-ack'
+**Error Type**: `NOTIFICATION_DISPLAY_FAILED`
 
-- `subscribe` / `unsubscribe` - Room management
-  - Joins/leaves Socket.IO rooms
-  - Emits confirmation
+**Handled Scenarios**:
+- Error processing notification for display
+- Toast notification rendering fails
+- UI component errors during notification display
+- State update failures
 
-- `message` - Client sends message
-  - Broadcasts to all other clients
-  - Emits 'message-sent' confirmation
+**Recovery Strategy**: Skip display, keep in store
+- Recovery action: SKIP
+- Error severity: LOW
+- Notification remains in store
+- User can view in notifications panel
 
-- `disconnect` - Client disconnects
-  - Removes from connection manager
+**Edge Cases**:
+- Display fails for specific notification types
+- UI errors preventing toast display
+- State corruption during display
 
-**Key Features**:
-- Manages connection lifecycle
-- Handles user authentication
-- Processes queued messages on new connections
+### 5.4 State Corruption
 
----
+**Error Type**: `NOTIFICATION_STATE_CORRUPTED`
 
-#### 14. `lib/server/connection-manager.ts`
-**Role**: Tracks Socket.IO client connections and user associations
+**Handled Scenarios**:
+- Redux store state becomes inconsistent
+- Notification data structure violations
+- Unread count mismatch with notifications
+- State update failures causing corruption
 
-**Data Structure**:
-```typescript
-Map<socketId, ConnectionInfo>
-ConnectionInfo {
-  socketId: string,
-  userId?: string,
-  connectedAt: Date,
-  lastHeartbeat: Date
-}
-```
+**Recovery Strategy**: Abort and reset state
+- Recovery action: ABORT
+- Error severity: HIGH
+- State reset to initial values
+- Requires re-fetch of notifications
 
-**Functions**:
-- `addConnection(socketId, userId?)` - Adds new connection
-- `removeConnection(socketId)` - Removes connection
-- `updateUserId(socketId, userId)` - Updates user ID for connection
-- `updateHeartbeat(socketId)` - Updates heartbeat timestamp
-- `getAllConnections()` - Returns all connections
-- `getConnectionCount()` - Returns connection count
-- `clearAllConnections()` - Clears all connections
+**Edge Cases**:
+- Partial state corruption
+- Corruption during merge operations
+- State corruption from concurrent updates
 
-**Key Features**:
-- In-memory storage (Map)
-- Tracks user associations for filtering
-- Heartbeat tracking for connection health
+### 5.5 Initial Load Failures
 
----
+**Error Type**: `INITIAL_LOAD_FAILED`
 
-## User Authentication Flow
+**Handled Scenarios**:
+- Failed to fetch initial notifications from API
+- API unavailable during application startup
+- Network issues preventing initial load
+- Authentication failures during initial load
 
-```
-1. User Logs In
-   │
-   ▼
-2. Auth State Updated (Redux)
-   │
-   ├─► user.uid available
-   ├─► token available
-   └─► isAuthenticated = true
-   │
-   ▼
-3. SocketProvider Detects Auth State
-   │
-   ├─► useEffect triggers when:
-   │   - isConnected = true
-   │   - isAuthenticated = true
-   │   - user.uid exists
-   │
-   ▼
-4. Calls authenticate(user.uid, token)
-   │
-   ├─► useSocketRedux.authenticate()
-   │   └─► socket.emit('authenticate', { userId: user.uid, token })
-   │
-   ▼
-5. Server Receives 'authenticate' Event
-   │
-   ├─► socket-handlers.ts
-   │   └─► updateUserId(socket.id, data.userId)
-   │
-   ▼
-6. Connection Manager Updates
-   │
-   ├─► connection-manager.ts
-   │   └─► connections.set(socketId, { ..., userId: user.uid })
-   │
-   ▼
-7. User ID Now Available for Message Filtering
-   │
-   └─► PubSub messages with matching user_id will be delivered
-```
+**Recovery Strategy**: Retry with fallback
+- Recovery action: RETRY
+- Error severity: HIGH
+- Maximum retries: 3
+- Mark load complete even on failure to prevent blocking
+
+**Edge Cases**:
+- Initial load fails but PubSub messages arrive
+- Partial initial load (some notifications, then error)
+- Initial load timeout
+
+### 5.6 Merge Failures
+
+**Error Type**: `MERGE_FAILED`
+
+**Handled Scenarios**:
+- Failed to merge API notifications with existing state
+- Redux dispatch errors during merge
+- State update conflicts during merge
+- Data structure incompatibility
+
+**Recovery Strategy**: Fallback to replace operation
+- Recovery action: FALLBACK
+- Error severity: MEDIUM
+- Replace existing notifications instead of merge
+- Prevents data loss
+
+**Edge Cases**:
+- Merge fails for specific notification types
+- Concurrent merge operations
+- Merge with corrupted existing state
 
 ---
 
-## Message Deduplication
+## 6. Edge Cases and Special Scenarios
 
-The system prevents duplicate notifications through multiple mechanisms:
+### 6.1 No Messages Received
 
-1. **Redux Store Deduplication** (`notificationsSlice.ts`):
-   - Checks `messageId` before adding
-   - Handles API notifications (api-* prefix) specially
-   - Prevents same notification from appearing twice
+**Handled Scenarios**:
+- PubSub subscription active but no messages arriving
+- WebSocket connected but no notifications received
+- Long periods without message activity
+- Silent failures in message delivery
 
-2. **PubSub Message Acknowledgment**:
-   - Messages are acked only after successful delivery
-   - Prevents PubSub from redelivering processed messages
+**Handling Strategy**:
+- Connection health monitoring via heartbeats
+- Periodic connection status checks
+- Timeout detection for expected messages
+- User notification if expected messages don't arrive
 
-3. **Message Queue Deduplication**:
-   - Queue checks for existing messages before adding
-   - Prevents queue overflow from duplicates
+**Edge Cases**:
+- Messages published but not delivered
+- Subscription active but messages not reaching listener
+- WebSocket connected but server not forwarding messages
+
+### 6.2 Service Failures
+
+**Handled Scenarios**:
+- Backend notification service completely down
+- Database unavailable preventing notification storage
+- PubSub service outage
+- WebSocket server crash
+
+**Handling Strategy**:
+- Graceful degradation to API-only mode
+- Cached notifications displayed
+- User notified of service issues
+- Automatic retry when services recover
+- Queue messages for processing when services return
+
+**Edge Cases**:
+- Partial service failure (some features work, others don't)
+- Service recovers but with data loss
+- Multiple services failing simultaneously
+
+### 6.3 Concurrent Operations
+
+**Handled Scenarios**:
+- Multiple notification sources (API + PubSub) delivering simultaneously
+- Rapid sequence of notifications
+- State updates from multiple sources
+- Race conditions in notification processing
+
+**Handling Strategy**:
+- Duplicate detection prevents duplicate processing
+- Queue management for ordered processing
+- State update batching where possible
+- Initial load completion flag prevents race conditions
+
+**Edge Cases**:
+- API and PubSub deliver same notification simultaneously
+- Notifications arrive faster than processing rate
+- State updates conflict during concurrent operations
+
+### 6.4 Timeout Scenarios
+
+**Handled Scenarios**:
+- Document extraction timeout (10 minutes)
+- Initial load timeout (5 seconds for PubSub queuing)
+- API request timeouts
+- WebSocket connection timeout (20 seconds)
+
+**Handling Strategy**:
+- Timeout detection with appropriate actions
+- User notifications for timeouts
+- Cleanup of timed-out operations
+- Retry mechanisms where appropriate
+
+**Edge Cases**:
+- Timeout occurs during critical operation
+- Multiple timeouts in sequence
+- Timeout false positives
+
+### 6.5 Browser and Environment Issues
+
+**Handled Scenarios**:
+- localStorage unavailable (private browsing, quota exceeded)
+- Browser tab backgrounded affecting WebSocket
+- Page visibility changes
+- Browser storage quota exceeded
+
+**Handling Strategy**:
+- Graceful fallback when localStorage fails
+- Error handling for storage operations
+- Connection management based on page visibility
+- Storage quota monitoring
+
+**Edge Cases**:
+- localStorage read succeeds but write fails
+- Partial localStorage data corruption
+- Browser-specific WebSocket limitations
+
+### 6.6 Message Ordering
+
+**Handled Scenarios**:
+- Messages arrive out of order
+- Older messages arrive after newer ones
+- Duplicate messages with different timestamps
+- Messages with same timestamp
+
+**Handling Strategy**:
+- Timestamp-based sorting in UI
+- Message ID tracking for ordering
+- Unread notifications prioritized in display
+- Duplicate detection prevents out-of-order duplicates
+
+**Edge Cases**:
+- Clock skew between systems
+- Messages with identical timestamps
+- Messages without timestamps
+
+### 6.7 Large Message Volumes
+
+**Handled Scenarios**:
+- High frequency of notifications
+- Large notification payloads
+- Memory concerns with many notifications
+- Performance degradation with large lists
+
+**Handling Strategy**:
+- Notification list limits (50 errors max in state)
+- Pagination for API fetches
+- Efficient state updates
+- UI virtualization for large lists
+
+**Edge Cases**:
+- Sudden spike in notification volume
+- Very large individual notification payloads
+- Memory pressure from accumulated notifications
+
+### 6.8 User Session Management
+
+**Handled Scenarios**:
+- User logs out during active notifications
+- User switches accounts
+- Session expires during notification processing
+- Multiple tabs with same user
+
+**Handling Strategy**:
+- Authentication state checks before processing
+- Cleanup on logout
+- Per-tab connection management
+- State reset on authentication change
+
+**Edge Cases**:
+- Logout during message processing
+- Session expires mid-operation
+- Notifications for logged-out user
 
 ---
 
-## Error Handling & Resilience
+## 7. Error Recovery Actions
 
-### PubSub Connection Failures
-- Automatic retry with exponential backoff
-- Max 10 retry attempts
-- Graceful degradation (logs errors, continues)
+### 7.1 RETRY
+- **When Used**: Recoverable errors that may succeed on retry
+- **Examples**: Connection failures, API timeouts, ack failures
+- **Strategy**: Exponential backoff with maximum retry limits
 
-### Socket.IO Connection Failures
-- Automatic reconnection (up to 10 attempts)
-- Reconnection delay: 1-5 seconds
-- Connection state tracked in Redux
+### 7.2 SKIP
+- **When Used**: Errors where skipping is safe and appropriate
+- **Examples**: Duplicate messages, malformed data, missing user ID
+- **Strategy**: Log error and continue processing other messages
 
-### API Failures
-- Returns empty array on non-critical errors
-- 401 errors throw (triggers auth flow)
-- 500 errors throw (service unavailable)
-- 404 errors return empty (service might not be available)
+### 7.3 QUEUE
+- **When Used**: Temporary failures that may resolve soon
+- **Examples**: Routing failures, emit failures, connection issues
+- **Strategy**: Store message for later processing when conditions improve
 
-### Message Processing Failures
-- Failed messages are nacked (redelivered by PubSub)
-- Queue prevents message loss when clients disconnect
-- Stale messages (30s+) are nacked to allow redelivery
+### 7.4 FALLBACK
+- **When Used**: Errors where alternative approach is available
+- **Examples**: Invalid API response, merge failures
+- **Strategy**: Use alternative data source or operation mode
 
----
-
-## Performance Optimizations
-
-1. **Message Queue**: Prevents message loss when clients disconnect
-2. **Connection Tracking**: Efficient Map-based storage
-3. **Redux Deduplication**: Prevents duplicate renders
-4. **Lazy Loading**: API notifications load only when needed
-5. **Batch Processing**: Queue processes multiple messages at once
-6. **Flow Control**: PubSub limits concurrent messages (maxMessages: 10)
+### 7.5 ABORT
+- **When Used**: Non-recoverable errors requiring intervention
+- **Examples**: Missing subscription, authentication required, state corruption
+- **Strategy**: Stop operation and require manual intervention or configuration fix
 
 ---
 
-## Security Considerations
+## 8. Error Severity Levels
 
-1. **User-Based Filtering**: Only matching users receive notifications
-2. **Bearer Token Authentication**: API calls require valid token
-3. **Socket Authentication**: User ID must be authenticated before receiving messages
-4. **Connection Validation**: Server validates user associations
+### 8.1 CRITICAL
+- **Impact**: System cannot function without resolution
+- **Examples**: PubSub connection failed, subscription missing
+- **Action**: Immediate attention required, may require configuration changes
+
+### 8.2 HIGH
+- **Impact**: Significant functionality impaired
+- **Examples**: Socket reconnection failed, API service unavailable, initial load failed
+- **Action**: Retry with aggressive strategy, user notification may be needed
+
+### 8.3 MEDIUM
+- **Impact**: Some functionality affected but system continues
+- **Examples**: Message parse failed, routing failed, API fetch failed
+- **Action**: Retry with standard strategy, log for monitoring
+
+### 8.4 LOW
+- **Impact**: Minor issues, minimal user impact
+- **Examples**: Duplicate notification, missing user ID, display failed
+- **Action**: Skip and continue, log for awareness
 
 ---
 
-## Configuration
+## 9. Monitoring and Observability
 
-### Environment Variables
+### 9.1 Error Tracking
+- All errors logged with context and timestamps
+- Error history maintained (max 100 entries)
+- Errors categorized by type and severity
+- Error counts and patterns tracked
 
-**Client-Side**:
-- `NEXT_PUBLIC_NOTIFICATIONS_API_URL` - API endpoint URL
-- `NEXT_PUBLIC_SOCKET_IO_PATH` - Socket.IO path (default: '/api/socket.io')
+### 9.2 Performance Monitoring
+- Message processing times logged
+- Connection state changes tracked
+- Queue size and processing rate monitored
+- API response times measured
 
-**Server-Side**:
-- `GCP_PROJECT_ID` - Google Cloud Project ID
-- `PUBSUB_SUBSCRIPTION` - PubSub subscription name
-- `PUBSUB_TOPIC` - PubSub topic name
-- `GOOGLE_APPLICATION_CREDENTIALS` - Path to GCP credentials JSON
+### 9.3 User Experience
+- User notifications for critical errors
+- Toast messages for important failures
+- Connection status indicators
+- Graceful degradation when services unavailable
 
 ---
 
-## Summary
+## 10. Best Practices Implemented
 
-The notifications system provides:
-- ✅ **Historical Data**: REST API loads saved notifications
-- ✅ **Real-time Updates**: PubSub delivers live notifications
-- ✅ **User Filtering**: Only matching users receive notifications
-- ✅ **Resilience**: Queue system, retry logic, error handling
-- ✅ **Deduplication**: Prevents duplicate notifications
-- ✅ **Performance**: Efficient state management and routing
+### 10.1 Defensive Programming
+- Null/undefined checks throughout
+- Type validation for incoming data
+- Safe error handling with fallbacks
+- Boundary condition handling
 
-Both systems work together seamlessly, with API notifications providing context and PubSub notifications delivering real-time updates.
+### 10.2 Resilience
+- Automatic retry mechanisms
+- Circuit breaker patterns for failing services
+- Queue management for temporary failures
+- State recovery mechanisms
+
+### 10.3 User Experience
+- Non-blocking error handling
+- Clear user notifications
+- Graceful degradation
+- Transparent error recovery
+
+### 10.4 Data Integrity
+- Duplicate prevention
+- State consistency checks
+- Transaction-like operations where possible
+- Data validation before processing
+
+---
+
+## Conclusion
+
+This comprehensive error handling system ensures the notifications flow remains robust, resilient, and user-friendly even under adverse conditions. All error types are categorized, assigned appropriate recovery strategies, and monitored for continuous improvement of the system's reliability.
+
+
 
