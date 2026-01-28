@@ -1,822 +1,418 @@
-# Notifications Flow - Error Handling and Edge Cases Documentation
+# Complete API Documentation for `/claims/search` Endpoint
 
 ## Overview
-
-This document provides a comprehensive overview of all error types and edge cases carefully handled throughout the notifications flow, including WebSocket connections, PubSub message processing, API interactions, and state management.
-
----
-
-## 1. WebSocket Connection Errors
-
-### 1.1 Connection Failures
-
-**Error Type**: `SOCKET_CONNECTION_FAILED`
-
-**Handled Scenarios**:
-- Initial connection attempt fails due to network issues
-- Server is unavailable or unreachable
-- Connection timeout during handshake (20 seconds)
-- DNS resolution failures
-- Firewall or proxy blocking WebSocket connections
-
-**Recovery Strategy**: Automatic retry with exponential backoff
-- Reconnection attempts: Up to 10 attempts
-- Initial delay: 1 second
-- Maximum delay: 5 seconds between attempts
-- Recovery action: RETRY
-
-**Edge Cases**:
-- Connection fails immediately after page load
-- Connection drops during active session
-- Multiple rapid connection attempts prevented by connection state checks
-
-### 1.2 Disconnection Events
-
-**Error Type**: `SOCKET_DISCONNECTED`
-
-**Handled Scenarios**:
-- Unexpected disconnection from server
-- Network interruption (WiFi drop, mobile network switch)
-- Server-side connection termination
-- Client-side navigation causing connection loss
-
-**Recovery Strategy**: Automatic reconnection with state preservation
-- Heartbeat mechanism stops immediately
-- Connection state updated in Redux store
-- Automatic reconnection initiated
-- Recovery action: RETRY
-
-**Edge Cases**:
-- Disconnection during message transmission
-- Multiple disconnection events in rapid succession
-- Disconnection while processing queued notifications
-
-### 1.3 Reconnection Failures
-
-**Error Type**: `SOCKET_RECONNECT_FAILED`
-
-**Handled Scenarios**:
-- All reconnection attempts exhausted (10 attempts)
-- Persistent network issues preventing reconnection
-- Server permanently unavailable
-- Authentication failures during reconnection
-
-**Recovery Strategy**: 
-- Maximum retry attempts: 10
-- Recovery action: RETRY
-- Error logged with severity: HIGH
-- User notified of connection issues
-
-**Edge Cases**:
-- Intermittent connectivity causing repeated failures
-- Reconnection succeeds but immediately fails again
-- Partial reconnection (connected but not authenticated)
-
-### 1.4 Emit Failures
-
-**Error Type**: `SOCKET_EMIT_FAILED`
-
-**Handled Scenarios**:
-- Attempting to emit message when socket is disconnected
-- Message payload too large
-- Socket.IO internal errors during emission
-- Network issues during message transmission
-
-**Recovery Strategy**: Message queuing for later transmission
-- Recovery action: QUEUE
-- Messages stored for retry when connection restored
-- Error severity: MEDIUM
-
-**Edge Cases**:
-- Emit fails for critical messages (notifications)
-- Multiple emit failures in sequence
-- Emit succeeds but message not received by server
-
-### 1.5 User Not Found
-
-**Error Type**: `SOCKET_USER_NOT_FOUND`
-
-**Handled Scenarios**:
-- Routing notification to user ID that has no active connections
-- User logged out but notification still being routed
-- Invalid or non-existent user ID in message
-
-**Recovery Strategy**: Skip message processing
-- Recovery action: SKIP
-- Error severity: LOW
-- Message acknowledged to prevent redelivery
-
-**Edge Cases**:
-- User disconnects between message receipt and routing
-- Multiple notifications for same non-existent user
-- User ID format mismatch
+The `/claims/search` endpoint is a powerful search and filtering API for medical claims data. It supports complex filtering, keyword search, pagination, and custom sorting with special handling for priority claims.
 
 ---
 
-## 2. PubSub Connection and Subscription Errors
+## Endpoint Details
 
-### 2.1 PubSub Connection Failures
-
-**Error Type**: `PUBSUB_CONNECTION_FAILED`
-
-**Handled Scenarios**:
-- Google Cloud PubSub service unavailable
-- Network connectivity issues to GCP
-- Authentication/authorization failures
-- PubSub client initialization errors
-- Subscription listener startup failures
-
-**Recovery Strategy**: Retry with exponential backoff
-- Maximum retry attempts: 10
-- Recovery action: RETRY
-- Error severity: CRITICAL
-- Automatic retry scheduling enabled
-
-**Edge Cases**:
-- Connection fails during application startup
-- Intermittent GCP service outages
-- Credential expiration during runtime
-- Rate limiting from GCP
-
-### 2.2 Missing Subscription
-
-**Error Type**: `PUBSUB_SUBSCRIPTION_MISSING`
-
-**Handled Scenarios**:
-- Subscription does not exist in Google Cloud Console
-- Subscription deleted or renamed
-- Incorrect subscription name in configuration
-- Subscription not accessible due to permissions
-
-**Recovery Strategy**: Abort operation (non-recoverable)
-- Recovery action: ABORT
-- Error severity: CRITICAL
-- Application cannot proceed without subscription
-- Clear error message provided for configuration fix
-
-**Edge Cases**:
-- Subscription exists but not accessible
-- Subscription name typo in environment variables
-- Subscription in different project/region
+**Method:** `POST`  
+**URL:** `/claims/search`  
+**Authentication:** Required (Bearer Token)
 
 ---
 
-## 3. PubSub Message Processing Errors
+## Authentication
 
-### 3.1 Message Parse Failures
+**Header Required:**
+```
+Authorization: Bearer <firebase_id_token>
+```
 
-**Error Type**: `PUBSUB_MESSAGE_PARSE_FAILED`
-
-**Handled Scenarios**:
-- Invalid JSON format in message payload
-- Malformed message structure
-- Encoding issues (non-UTF-8 content)
-- Corrupted message data
-- Missing required fields in message
-
-**Recovery Strategy**: Skip malformed message
-- Recovery action: SKIP
-- Error severity: MEDIUM
-- Message nacked to prevent reprocessing
-- Error logged with message ID for debugging
-
-**Edge Cases**:
-- Partial JSON causing parse errors
-- Messages with unexpected data types
-- Empty or null message payloads
-- Messages exceeding size limits
-
-### 3.2 Missing User ID
-
-**Error Type**: `PUBSUB_MESSAGE_MISSING_USER_ID`
-
-**Handled Scenarios**:
-- Message attributes missing user_id field
-- Message data missing user identifier
-- User ID in unexpected location (nested objects)
-- Multiple user ID fields with none matching expected format
-
-**Recovery Strategy**: Skip message (cannot route without user)
-- Recovery action: SKIP
-- Error severity: LOW
-- Message acknowledged to prevent redelivery
-- Multiple user ID field locations checked before skipping
-
-**Edge Cases**:
-- User ID present but in wrong format
-- User ID in nested attributes object
-- Multiple potential user ID fields with conflicts
-
-### 3.3 Routing Failures
-
-**Error Type**: `PUBSUB_MESSAGE_ROUTING_FAILED`
-
-**Handled Scenarios**:
-- Unable to determine routing strategy
-- Target room does not exist
-- Target user has no active connections
-- Socket.IO emit fails during routing
-- Connection manager errors
-
-**Recovery Strategy**: Queue message for later processing
-- Recovery action: QUEUE
-- Error severity: MEDIUM
-- Message queued with timestamp
-- Retry when connections available
-
-**Edge Cases**:
-- Routing succeeds but message not delivered
-- Partial routing (some sockets receive, others don't)
-- Routing configuration conflicts
-
-### 3.4 Message Queue Overflow
-
-**Error Type**: `PUBSUB_MESSAGE_QUEUE_OVERFLOW`
-
-**Handled Scenarios**:
-- Message queue exceeds maximum capacity
-- Too many messages queued due to connection issues
-- Queue processing slower than message arrival rate
-- Backlog of messages waiting for connection
-
-**Recovery Strategy**: Skip oldest messages
-- Recovery action: SKIP
-- Error severity: HIGH
-- Oldest messages removed from queue
-- Prevents memory exhaustion
-
-**Edge Cases**:
-- Queue fills up rapidly during connection outage
-- Queue processing stops but messages keep arriving
-- Queue size limits reached during high traffic
-
-### 3.5 Stale Messages
-
-**Error Type**: `PUBSUB_MESSAGE_STALE`
-
-**Handled Scenarios**:
-- Messages queued longer than maximum age threshold
-- Messages older than acceptable processing window
-- Time-sensitive messages that are no longer relevant
-
-**Recovery Strategy**: Nack and remove stale messages
-- Recovery action: SKIP
-- Error severity: MEDIUM
-- Stale messages identified and nacked
-- Prevents processing outdated information
-
-**Edge Cases**:
-- Messages become stale during queue processing
-- Stale message detection during high load
-- Messages with time-sensitive data
-
-### 3.6 Acknowledgment Failures
-
-**Error Type**: `PUBSUB_MESSAGE_ACK_FAILED`
-
-**Handled Scenarios**:
-- Failed to acknowledge successfully processed message
-- PubSub service unavailable during ack
-- Network issues during acknowledgment
-- Message already acknowledged or expired
-
-**Recovery Strategy**: Retry acknowledgment
-- Recovery action: RETRY
-- Error severity: MEDIUM
-- Maximum retries: 3
-- Prevents message redelivery
-
-**Edge Cases**:
-- Ack fails after successful processing
-- Multiple ack attempts for same message
-- Ack timeout issues
-
-### 3.7 Negative Acknowledgment Failures
-
-**Error Type**: `PUBSUB_MESSAGE_NACK_FAILED`
-
-**Handled Scenarios**:
-- Failed to nack message that should be redelivered
-- PubSub service unavailable during nack
-- Network issues during negative acknowledgment
-- Message already processed or expired
-
-**Recovery Strategy**: Retry nack operation
-- Recovery action: RETRY
-- Error severity: MEDIUM
-- Maximum retries: 3
-- Ensures message redelivery when appropriate
-
-**Edge Cases**:
-- Nack fails for stale messages
-- Nack fails during error handling
-- Multiple nack attempts for same message
+The endpoint uses Firebase authentication and automatically extracts the user's company from the token for multi-tenancy support.
 
 ---
 
-## 4. API and Service Errors
+## Request Schema
 
-### 4.1 API Fetch Failures
+### Body Parameters
 
-**Error Type**: `API_FETCH_FAILED`
+```json
+{
+  "tabIndex": 0,
+  "currentPage": 1,
+  "perPage": 50,
+  "keyword": "",
+  "selectedTags": [],
+  "startDate": null,
+  "endDate": null,
+  "extra": {},
+  "code": "",
+  "remark": "",
+  "procedure": "",
+  "pos": "",
+  "sort": ""
+}
+```
 
-**Handled Scenarios**:
-- HTTP request to notifications API fails
-- Network timeout during API call
-- CORS errors preventing API access
-- Invalid API endpoint configuration
-- Request payload errors
+### Parameter Details
 
-**Recovery Strategy**: Retry with backoff
-- Recovery action: RETRY
-- Error severity: MEDIUM
-- Maximum retries: 3
-- Prevents concurrent fetch attempts
-
-**Edge Cases**:
-- API fails during initial load
-- Partial API response (connection drops mid-request)
-- API returns error status codes
-
-### 4.2 Authentication Required
-
-**Error Type**: `API_AUTH_REQUIRED`
-
-**Handled Scenarios**:
-- Missing or invalid authentication token
-- Token expired during API call
-- Unauthorized access to notifications endpoint
-- Session expired
-
-**Recovery Strategy**: Abort and require re-authentication
-- Recovery action: ABORT
-- Error severity: HIGH
-- User must re-authenticate
-- Prevents unauthorized data access
-
-**Edge Cases**:
-- Token expires during long-running request
-- Invalid token format
-- Token missing from request headers
-
-### 4.3 Service Unavailable
-
-**Error Type**: `API_SERVICE_UNAVAILABLE`
-
-**Handled Scenarios**:
-- Backend API service down or unreachable
-- 503 Service Unavailable HTTP status
-- API rate limiting exceeded
-- Maintenance mode on backend
-
-**Recovery Strategy**: Retry with exponential backoff
-- Recovery action: RETRY
-- Error severity: HIGH
-- Maximum retries: 5
-- Longer delays between retries
-
-**Edge Cases**:
-- Service becomes unavailable during request
-- Intermittent service availability
-- Service overload causing timeouts
-
-### 4.4 Invalid API Response
-
-**Error Type**: `API_INVALID_RESPONSE`
-
-**Handled Scenarios**:
-- API returns unexpected response format
-- Missing required fields in response
-- Invalid JSON in response body
-- Response structure mismatch
-
-**Recovery Strategy**: Fallback to empty state
-- Recovery action: FALLBACK
-- Error severity: MEDIUM
-- Use cached or empty notifications
-- Prevents application crash
-
-**Edge Cases**:
-- Partial response data
-- Response with wrong content type
-- Response structure changes breaking compatibility
-
-### 4.5 Network Errors
-
-**Error Type**: `API_NETWORK_ERROR`
-
-**Handled Scenarios**:
-- Network connectivity lost during request
-- DNS resolution failures
-- Request timeout
-- Connection reset by peer
-
-**Recovery Strategy**: Retry when network available
-- Recovery action: RETRY
-- Error severity: MEDIUM
-- Maximum retries: 3
-- Network state monitoring
-
-**Edge Cases**:
-- Network drops mid-request
-- Slow network causing timeouts
-- Network switches (WiFi to mobile)
+| Parameter | Type | Required | Default | Constraints | Description |
+|-----------|------|----------|---------|-------------|-------------|
+| `tabIndex` | integer | No | `0` | - | Tab context for filtering claims (0-6) |
+| `currentPage` | integer | No | `1` | >= 1 | Current page number for pagination |
+| `perPage` | integer | No | `50` | 1-1000 | Number of results per page |
+| `keyword` | string | No | `""` | - | Search keyword for ClaimNo, PayerName, PatientName, or PrimaryDX |
+| `selectedTags` | array[string] | No | `[]` | - | Category tags for filtering (see Tag Logic below) |
+| `startDate` | string | No | `null` | ISO date | Service date range start (inclusive) |
+| `endDate` | string | No | `null` | ISO date | Service date range end (inclusive) |
+| `extra` | object | No | `{}` | - | Additional filters (see Extra Filters below) |
+| `code` | string | No | `""` | - | Adjustment code filter (format: GroupReason, e.g., "CONULL") |
+| `remark` | string | No | `""` | - | Filter by remark code |
+| `procedure` | string | No | `""` | - | Filter by procedure code |
+| `pos` | string | No | `""` | - | Filter by Place of Service |
+| `sort` | string | No | `""` | - | Sort column (prefix with `-` for descending) |
 
 ---
 
-## 5. Notification State and Processing Errors
+## Response Schema
 
-### 5.1 Duplicate Notifications
+### Success Response (200 OK)
 
-**Error Type**: `NOTIFICATION_DUPLICATE`
+```json
+{
+  "message": "Success",
+  "data": [
+    {
+      "ActionDate": "Wed, 15 Jan 2025 12:30:00 GMT",
+      "ActionTaken": "Appeal Filed",
+      "AllowedAmt": "250.00",
+      "Amount": "500.00",
+      "Category": "C",
+      "ClaimNo": "3012374106",
+      "LoadDate": "Mon, 01 Jan 2025 08:00:00 GMT",
+      "PayerID": "12345",
+      "PayerName": "Blue Cross Blue Shield",
+      "PayerSeq": "P",
+      "PlaceOfService": "11",
+      "PrimaryCode": "CO45",
+      "PrimaryDX": "Z00.00",
+      "PrimaryGroup": "CO",
+      "PrimaryProcedure": "99213",
+      "ProvNPI": "1234567890",
+      "ProvTaxID": "12-3456789",
+      "Remark": "N115",
+      "ServiceDate": "Tue, 10 Dec 2024 00:00:00 GMT"
+    }
+  ],
+  "page": 1,
+  "maxPage": -1
+}
+```
 
-**Handled Scenarios**:
-- Same message received multiple times via PubSub
-- API returns notifications already in store
-- WebSocket and API delivering same notification
-- Message ID collision
+### Response Fields
 
-**Recovery Strategy**: Skip duplicate
-- Recovery action: SKIP
-- Error severity: LOW
-- Duplicate detection by messageId
-- Prevents duplicate UI notifications
+| Field | Type | Description |
+|-------|------|-------------|
+| `message` | string | Status message |
+| `data` | array | Array of claim objects |
+| `page` | integer | Current page number |
+| `maxPage` | integer | Maximum page number (-1 indicates not calculated) |
 
-**Edge Cases**:
-- Duplicates with slightly different messageIds
-- Duplicates from different sources (API + PubSub)
-- Duplicates with same content but different IDs
+### Claim Object Fields
 
-### 5.2 Missing Notification Data
-
-**Error Type**: `NOTIFICATION_MISSING_DATA`
-
-**Handled Scenarios**:
-- Notification received with null or undefined data
-- Missing required fields (messageId, data)
-- Empty notification payload
-- Malformed notification structure
-
-**Recovery Strategy**: Skip notification
-- Recovery action: SKIP
-- Error severity: MEDIUM
-- Notification not added to store
-- Error logged for debugging
-
-**Edge Cases**:
-- Notification with partial data
-- Notification with data in unexpected format
-- Notification missing critical fields
-
-### 5.3 Display Failures
-
-**Error Type**: `NOTIFICATION_DISPLAY_FAILED`
-
-**Handled Scenarios**:
-- Error processing notification for display
-- Toast notification rendering fails
-- UI component errors during notification display
-- State update failures
-
-**Recovery Strategy**: Skip display, keep in store
-- Recovery action: SKIP
-- Error severity: LOW
-- Notification remains in store
-- User can view in notifications panel
-
-**Edge Cases**:
-- Display fails for specific notification types
-- UI errors preventing toast display
-- State corruption during display
-
-### 5.4 State Corruption
-
-**Error Type**: `NOTIFICATION_STATE_CORRUPTED`
-
-**Handled Scenarios**:
-- Redux store state becomes inconsistent
-- Notification data structure violations
-- Unread count mismatch with notifications
-- State update failures causing corruption
-
-**Recovery Strategy**: Abort and reset state
-- Recovery action: ABORT
-- Error severity: HIGH
-- State reset to initial values
-- Requires re-fetch of notifications
-
-**Edge Cases**:
-- Partial state corruption
-- Corruption during merge operations
-- State corruption from concurrent updates
-
-### 5.5 Initial Load Failures
-
-**Error Type**: `INITIAL_LOAD_FAILED`
-
-**Handled Scenarios**:
-- Failed to fetch initial notifications from API
-- API unavailable during application startup
-- Network issues preventing initial load
-- Authentication failures during initial load
-
-**Recovery Strategy**: Retry with fallback
-- Recovery action: RETRY
-- Error severity: HIGH
-- Maximum retries: 3
-- Mark load complete even on failure to prevent blocking
-
-**Edge Cases**:
-- Initial load fails but PubSub messages arrive
-- Partial initial load (some notifications, then error)
-- Initial load timeout
-
-### 5.6 Merge Failures
-
-**Error Type**: `MERGE_FAILED`
-
-**Handled Scenarios**:
-- Failed to merge API notifications with existing state
-- Redux dispatch errors during merge
-- State update conflicts during merge
-- Data structure incompatibility
-
-**Recovery Strategy**: Fallback to replace operation
-- Recovery action: FALLBACK
-- Error severity: MEDIUM
-- Replace existing notifications instead of merge
-- Prevents data loss
-
-**Edge Cases**:
-- Merge fails for specific notification types
-- Concurrent merge operations
-- Merge with corrupted existing state
+| Field | Type | Format | Description |
+|-------|------|--------|-------------|
+| `ActionDate` | string/null | GMT datetime | Date action was taken on claim |
+| `ActionTaken` | string/null | - | Description of action taken |
+| `AllowedAmt` | string/null | "0.00" | Amount allowed by payer |
+| `Amount` | string/null | "0.00" | Total claim amount |
+| `Category` | string/null | - | Claim category/status |
+| `ClaimNo` | string/null | - | Unique claim number |
+| `LoadDate` | string/null | GMT datetime | Date claim was loaded |
+| `PayerID` | string/null | - | Payer identifier |
+| `PayerName` | string/null | - | Name of insurance payer |
+| `PayerSeq` | string/null | - | Payer sequence (P=Primary, S=Secondary, etc.) |
+| `PlaceOfService` | string/null | - | Location where service was provided |
+| `PrimaryCode` | string/null | - | Primary adjustment/denial code |
+| `PrimaryDX` | string/null | - | Primary diagnosis code |
+| `PrimaryGroup` | string/null | - | Primary adjustment group |
+| `PrimaryProcedure` | string/null | - | Primary procedure code |
+| `ProvNPI` | string/null | - | Provider National Provider Identifier |
+| `ProvTaxID` | string/null | - | Provider Tax ID |
+| `Remark` | string/null | - | Remark code |
+| `ServiceDate` | string/null | GMT datetime | Date service was provided |
 
 ---
 
-## 6. Edge Cases and Special Scenarios
+## Filtering Logic
 
-### 6.1 No Messages Received
+### 1. Keyword Search
+When `keyword` is provided, searches across:
+- Claim Number (`ClaimNo`)
+- Payer Name (`PayerName`)
+- Patient Name (`PatientName`)
+- Primary Diagnosis (`PrimaryDX`)
 
-**Handled Scenarios**:
-- PubSub subscription active but no messages arriving
-- WebSocket connected but no notifications received
-- Long periods without message activity
-- Silent failures in message delivery
+Uses case-insensitive partial matching (LIKE %keyword%).
 
-**Handling Strategy**:
-- Connection health monitoring via heartbeats
-- Periodic connection status checks
-- Timeout detection for expected messages
-- User notification if expected messages don't arrive
+### 2. Tag/Category Logic
 
-**Edge Cases**:
-- Messages published but not delivered
-- Subscription active but messages not reaching listener
-- WebSocket connected but server not forwarding messages
+Tags are context-sensitive based on `tabIndex`:
 
-### 6.2 Service Failures
+| tabIndex | Description | Allowed Tags |
+|----------|-------------|--------------|
+| 0 | All Claims | All except DELINQUENT, Contractual Adj, Patient Resp, Documentation |
+| 1 | Contractual | Contractual Adj only |
+| 2 | Patient Responsibility | Patient Resp only |
+| 3 | Delinquent | DELINQUENT only |
+| 5, 6 | Special tabs | All tags |
 
-**Handled Scenarios**:
-- Backend notification service completely down
-- Database unavailable preventing notification storage
-- PubSub service outage
-- WebSocket server crash
+**Special behavior:**
+- If `DELINQUENT` tag is selected: filters claims where `Category IS NULL`
+- If no valid tags: defaults to `Category = 'A'` (or NULL if DELINQUENT)
+- Multiple tags create an OR condition
 
-**Handling Strategy**:
-- Graceful degradation to API-only mode
-- Cached notifications displayed
-- User notified of service issues
-- Automatic retry when services recover
-- Queue messages for processing when services return
+### 3. Automation Filter
 
-**Edge Cases**:
-- Partial service failure (some features work, others don't)
-- Service recovers but with data loss
-- Multiple services failing simultaneously
+Based on `tabIndex`:
+- **tabIndex = 0**: Automation in ['0', '1'] (manual and automated)
+- **tabIndex = 5 with "All" in extra**: No automation filter
+- **tabIndex = 5**: Automation != '0' (only automated)
+- **tabIndex = 6**: No automation filter
+- **Other tabs**: Automation = '0' (manual only)
 
-### 6.3 Concurrent Operations
+### 4. Date Range
+- `startDate`: Filters `ServiceDate >= startDate`
+- `endDate`: Filters `ServiceDate <= endDate`
+- Ignores values equal to "string"
 
-**Handled Scenarios**:
-- Multiple notification sources (API + PubSub) delivering simultaneously
-- Rapid sequence of notifications
-- State updates from multiple sources
-- Race conditions in notification processing
+### 5. Place of Service
+- `pos`: Exact match on `PlaceOfService`
 
-**Handling Strategy**:
-- Duplicate detection prevents duplicate processing
-- Queue management for ordered processing
-- State update batching where possible
-- Initial load completion flag prevents race conditions
+### 6. Subquery Filters
 
-**Edge Cases**:
-- API and PubSub deliver same notification simultaneously
-- Notifications arrive faster than processing rate
-- State updates conflict during concurrent operations
+**Remark Code (`remark`):**
+Joins with `CustomPaidServiceRemark` table to find claims with specific remark codes.
 
-### 6.4 Timeout Scenarios
+**Procedure Code (`procedure`):**
+Joins with `Procedures` table to find claims with specific procedure codes.
 
-**Handled Scenarios**:
-- Document extraction timeout (10 minutes)
-- Initial load timeout (5 seconds for PubSub queuing)
-- API request timeouts
-- WebSocket connection timeout (20 seconds)
-
-**Handling Strategy**:
-- Timeout detection with appropriate actions
-- User notifications for timeouts
-- Cleanup of timed-out operations
-- Retry mechanisms where appropriate
-
-**Edge Cases**:
-- Timeout occurs during critical operation
-- Multiple timeouts in sequence
-- Timeout false positives
-
-### 6.5 Browser and Environment Issues
-
-**Handled Scenarios**:
-- localStorage unavailable (private browsing, quota exceeded)
-- Browser tab backgrounded affecting WebSocket
-- Page visibility changes
-- Browser storage quota exceeded
-
-**Handling Strategy**:
-- Graceful fallback when localStorage fails
-- Error handling for storage operations
-- Connection management based on page visibility
-- Storage quota monitoring
-
-**Edge Cases**:
-- localStorage read succeeds but write fails
-- Partial localStorage data corruption
-- Browser-specific WebSocket limitations
-
-### 6.6 Message Ordering
-
-**Handled Scenarios**:
-- Messages arrive out of order
-- Older messages arrive after newer ones
-- Duplicate messages with different timestamps
-- Messages with same timestamp
-
-**Handling Strategy**:
-- Timestamp-based sorting in UI
-- Message ID tracking for ordering
-- Unread notifications prioritized in display
-- Duplicate detection prevents out-of-order duplicates
-
-**Edge Cases**:
-- Clock skew between systems
-- Messages with identical timestamps
-- Messages without timestamps
-
-### 6.7 Large Message Volumes
-
-**Handled Scenarios**:
-- High frequency of notifications
-- Large notification payloads
-- Memory concerns with many notifications
-- Performance degradation with large lists
-
-**Handling Strategy**:
-- Notification list limits (50 errors max in state)
-- Pagination for API fetches
-- Efficient state updates
-- UI virtualization for large lists
-
-**Edge Cases**:
-- Sudden spike in notification volume
-- Very large individual notification payloads
-- Memory pressure from accumulated notifications
-
-### 6.8 User Session Management
-
-**Handled Scenarios**:
-- User logs out during active notifications
-- User switches accounts
-- Session expires during notification processing
-- Multiple tabs with same user
-
-**Handling Strategy**:
-- Authentication state checks before processing
-- Cleanup on logout
-- Per-tab connection management
-- State reset on authentication change
-
-**Edge Cases**:
-- Logout during message processing
-- Session expires mid-operation
-- Notifications for logged-out user
+**Adjustment Code (`code`):**
+Format: `GroupReason` (e.g., "CO45", "CONULL")
+- First 2 characters = Adjustment Group
+- Remaining characters = Adjustment Reason
+- "NULL" as reason searches for any code in that group
+- Joins with `CustomServiceCodeForTable`
 
 ---
 
-## 7. Error Recovery Actions
+## Extra Filters Object
 
-### 7.1 RETRY
-- **When Used**: Recoverable errors that may succeed on retry
-- **Examples**: Connection failures, API timeouts, ack failures
-- **Strategy**: Exponential backoff with maximum retry limits
+The `extra` object supports the following keys:
 
-### 7.2 SKIP
-- **When Used**: Errors where skipping is safe and appropriate
-- **Examples**: Duplicate messages, malformed data, missing user ID
-- **Strategy**: Log error and continue processing other messages
+| Key | Type | Description |
+|-----|------|-------------|
+| `Recovery` | any | If present, filters claims with Recovery = '1' |
+| `PayerResponsibility` | string | Filters by payer sequence (P, S, T, etc.) |
+| `InsuranceType` | string | Filters by insurance type |
+| `PayerName` | string | Searches payer name (supports '*' delimiter for multiple names) |
+| `PayerNameAll` | string | Partial match on payer name |
+| `Only` | any | If present, only shows claims with denial actions |
+| `Title` | string | Filters by specific denial action title |
+| `All` | any | Used with tabIndex=5 to show all automation types |
 
-### 7.3 QUEUE
-- **When Used**: Temporary failures that may resolve soon
-- **Examples**: Routing failures, emit failures, connection issues
-- **Strategy**: Store message for later processing when conditions improve
-
-### 7.4 FALLBACK
-- **When Used**: Errors where alternative approach is available
-- **Examples**: Invalid API response, merge failures
-- **Strategy**: Use alternative data source or operation mode
-
-### 7.5 ABORT
-- **When Used**: Non-recoverable errors requiring intervention
-- **Examples**: Missing subscription, authentication required, state corruption
-- **Strategy**: Stop operation and require manual intervention or configuration fix
-
----
-
-## 8. Error Severity Levels
-
-### 8.1 CRITICAL
-- **Impact**: System cannot function without resolution
-- **Examples**: PubSub connection failed, subscription missing
-- **Action**: Immediate attention required, may require configuration changes
-
-### 8.2 HIGH
-- **Impact**: Significant functionality impaired
-- **Examples**: Socket reconnection failed, API service unavailable, initial load failed
-- **Action**: Retry with aggressive strategy, user notification may be needed
-
-### 8.3 MEDIUM
-- **Impact**: Some functionality affected but system continues
-- **Examples**: Message parse failed, routing failed, API fetch failed
-- **Action**: Retry with standard strategy, log for monitoring
-
-### 8.4 LOW
-- **Impact**: Minor issues, minimal user impact
-- **Examples**: Duplicate notification, missing user ID, display failed
-- **Action**: Skip and continue, log for awareness
+**Example:**
+```json
+{
+  "extra": {
+    "Recovery": "1",
+    "PayerResponsibility": "P",
+    "InsuranceType": "Commercial",
+    "PayerName": "Blue Cross*Aetna",
+    "Title": "Appeal"
+  }
+}
+```
 
 ---
 
-## 9. Monitoring and Observability
+## Sorting
 
-### 9.1 Error Tracking
-- All errors logged with context and timestamps
-- Error history maintained (max 100 entries)
-- Errors categorized by type and severity
-- Error counts and patterns tracked
+### Sort Parameter Format
+- Column name for ascending: `"ClaimNo"`
+- Prefix with `-` for descending: `"-ClaimNo"`
+- Default: `-ClaimNo` (descending by claim number)
 
-### 9.2 Performance Monitoring
-- Message processing times logged
-- Connection state changes tracked
-- Queue size and processing rate monitored
-- API response times measured
+### Allowed Sort Columns
+- `ClaimNo`
+- `ServiceDate`
+- `Amount`
+- `DeniedAmt`
+- `PayerName`
+- `Category`
+- `PrimaryCode`
+- `Automation`
+- `PlaceOfService`
+- `LoadDate`
+- `AllowedAmt`
+- `ActionDate`
 
-### 9.3 User Experience
-- User notifications for critical errors
-- Toast messages for important failures
-- Connection status indicators
-- Graceful degradation when services unavailable
-
----
-
-## 10. Best Practices Implemented
-
-### 10.1 Defensive Programming
-- Null/undefined checks throughout
-- Type validation for incoming data
-- Safe error handling with fallbacks
-- Boundary condition handling
-
-### 10.2 Resilience
-- Automatic retry mechanisms
-- Circuit breaker patterns for failing services
-- Queue management for temporary failures
-- State recovery mechanisms
-
-### 10.3 User Experience
-- Non-blocking error handling
-- Clear user notifications
-- Graceful degradation
-- Transparent error recovery
-
-### 10.4 Data Integrity
-- Duplicate prevention
-- State consistency checks
-- Transaction-like operations where possible
-- Data validation before processing
+### Priority Claims
+The following claims are always sorted first (regardless of sort order):
+```
+3012374106, 3012144775, 3011958455, 3012844576, 3012373360,
+3012104978, 3012036672, 3012007212, 3012006190, 3013333059,
+3012186160, 3012670620, 3012684286, 3012301429, 3013310585,
+3012820822, 3012525510, 3013182507, 3013146008, 3013269653,
+3013192283, 3013255723, 3013054155, 3013040103, 3011978959,
+3012091235, 3012202580, 3012342716, 3013408527
+```
 
 ---
 
-## Conclusion
+## Pagination
 
-This comprehensive error handling system ensures the notifications flow remains robust, resilient, and user-friendly even under adverse conditions. All error types are categorized, assigned appropriate recovery strategies, and monitored for continuous improvement of the system's reliability.
+- Uses offset-based pagination
+- Offset calculated as: `(currentPage - 1) * perPage`
+- Maximum items per page: 1000
+- Response does not calculate total pages (maxPage = -1)
 
+---
 
+## Example Requests
 
+### Example 1: Basic Search
+```bash
+curl -X POST "https://api.example.com/claims/search" \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "currentPage": 1,
+    "perPage": 50
+  }'
+```
+
+### Example 2: Keyword Search with Date Range
+```bash
+curl -X POST "https://api.example.com/claims/search" \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "keyword": "Blue Cross",
+    "startDate": "2024-01-01",
+    "endDate": "2024-12-31",
+    "currentPage": 1,
+    "perPage": 100
+  }'
+```
+
+### Example 3: Advanced Filtering
+```bash
+curl -X POST "https://api.example.com/claims/search" \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tabIndex": 0,
+    "selectedTags": ["C", "D"],
+    "pos": "11",
+    "code": "CO45",
+    "procedure": "99213",
+    "extra": {
+      "Recovery": "1",
+      "PayerResponsibility": "P"
+    },
+    "sort": "-ServiceDate",
+    "currentPage": 1,
+    "perPage": 50
+  }'
+```
+
+### Example 4: Search with Multiple Payers
+```bash
+curl -X POST "https://api.example.com/claims/search" \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "extra": {
+      "PayerName": "Blue Cross*Aetna*Cigna"
+    },
+    "currentPage": 1,
+    "perPage": 25
+  }'
+```
+
+---
+
+## Error Responses
+
+### 401 Unauthorized
+```json
+{
+  "detail": "Unauthorized or invalid company"
+}
+```
+
+**Cause:** Invalid or missing authentication token, or user has no associated company.
+
+### 422 Unprocessable Entity
+```json
+{
+  "detail": [
+    {
+      "loc": ["body", "currentPage"],
+      "msg": "ensure this value is greater than or equal to 1",
+      "type": "value_error.number.not_ge"
+    }
+  ]
+}
+```
+
+**Cause:** Invalid request body (validation errors).
+
+---
+
+## Performance Notes
+
+1. **Pagination**: Results are limited to prevent large data transfers. Use pagination for all queries.
+
+2. **Subqueries**: Using `code`, `remark`, or `procedure` filters triggers additional subqueries which may impact performance.
+
+3. **Keyword Search**: Searches across multiple fields using LIKE operator - may be slow on large datasets without proper indexing.
+
+4. **Date Ranges**: Always specify date ranges when possible to improve query performance.
+
+---
+
+## Business Logic Summary
+
+This endpoint implements complex business logic for medical claims management:
+- **Multi-tenancy**: Automatically filters by user's company
+- **Context-aware filtering**: Different tab contexts apply different rules
+- **Priority handling**: Certain claims always appear first
+- **Flexible searching**: Supports keyword, tag, date, and multiple custom filters
+- **Denial management**: Can filter by denial actions and their titles
+- **Recovery tracking**: Can filter claims marked for recovery
+- **Payer responsibility**: Supports primary, secondary, tertiary payer filtering
+
+---
+
+## Technical Implementation Details
+
+### Database Tables Used
+- `CustomAll` - Main claims table
+- `CustomPaidServiceRemark` - Remark codes
+- `Procedures` - Procedure codes
+- `CustomServiceCodeForTable` - Adjustment codes
+- `DenialActions` - Denial action tracking
+
+### Dependencies
+- **FastAPI** - Web framework
+- **SQLAlchemy** - ORM and query builder
+- **Pydantic** - Request/response validation
+- **Firebase Authentication** - User authentication and authorization
+
+### Multi-Tenancy
+The endpoint automatically filters all queries by the user's company, which is extracted from the Firebase authentication token. This ensures data isolation between different organizations using the system.
+
+---
+
+## Changelog
+
+### Version 2.0.0
+- Initial documented version
+- Support for complex filtering logic
+- Priority claims handling
+- Multi-tenancy support
+- Firebase authentication integration
